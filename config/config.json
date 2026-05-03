@@ -1,0 +1,39 @@
+{
+  "exchanges": [
+    {
+      "name": "binance",
+      "api_key": "",
+      "api_secret": "",
+      "base_url": "https://api.binance.com",
+      "enable": true
+    },
+    {
+      "name": "gateio",
+      "api_key": "",
+      "api_secret": "",
+      "base_url": "https://api.gateio.ws",
+      "enable": false
+    }
+  ],
+  "grids": [
+    {
+      "symbol": "BTC/USDT",
+      "upper_price": "70000",
+      "lower_price": "50000",
+      "grid_count": 0,
+      "total_investment": "1000",
+      "base_quantity": null,
+      "profit_per_trade": "0.01",
+      "fee_rate": "0.002",
+      "auto_adjust_enabled": true,
+      "adjust_interval": 300,
+      "price_deviation_threshold": "0.02",
+      "max_open_orders": 10,
+      "min_order_amount": "5",
+      "stop_loss_pct": "0.05",
+      "take_profit_pct": "0.10"
+    }
+  ],
+  "log_level": "INFO",
+  "data_dir": "./data"
+}

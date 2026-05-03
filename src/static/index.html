@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>网格交易控制台</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 顶部标题 -->
+        <header class="header">
+            <h1>🔧 网格交易控制台</h1>
+            <span id="connectionStatus" class="status-badge disconnected">未连接</span>
+        </header>
+
+        <!-- 顶部信息栏 -->
+        <section class="info-bar">
+            <div class="info-card">
+                <div class="info-label">当前价格</div>
+                <div class="info-value" id="currentPrice">--</div>
+            </div>
+            <div class="info-card">
+                <div class="info-label">网格间距</div>
+                <div class="info-value" id="gridSpacing">--</div>
+            </div>
+            <div class="info-card">
+                <div class="info-label">总交易次数</div>
+                <div class="info-value" id="totalTrades">0</div>
+            </div>
+            <div class="info-card">
+                <div class="info-label">总利润</div>
+                <div class="info-value profit" id="totalProfit">$0.00</div>
+            </div>
+            <div class="info-card">
+                <div class="info-label">USDT 余额</div>
+                <div class="info-value" id="usdtBalance">--</div>
+            </div>
+            <div class="info-card">
+                <div class="info-label">币余额</div>
+                <div class="info-value" id="coinBalance">--</div>
+            </div>
+        </section>
+
+        <!-- API Key 设置面板 -->
+        <section class="config-panel api-key-panel">
+            <div class="panel-header" onclick="toggleApiPanel()">
+                <h3>🔑 API Key 设置</h3>
+                <span id="apiToggleIcon" class="toggle-icon">▶</span>
+            </div>
+            <div id="apiPanel" class="panel-body" style="display:none;">
+                <div class="config-row">
+                    <div class="config-group">
+                        <label>Binance API Key</label>
+                        <input type="text" id="binanceApiKey" placeholder="输入 Binance API Key">
+                    </div>
+                    <div class="config-group">
+                        <label>Binance Secret Key</label>
+                        <input type="password" id="binanceApiSecret" placeholder="输入 Secret Key">
+                    </div>
+                    <div class="config-group">
+                        <label>&nbsp;</label>
+                        <button class="btn btn-save" onclick="saveApiKey('binance')">💾 保存</button>
+                        <button class="btn btn-test" onclick="testConnection('binance')">🔌 测试</button>
+                        <span id="binanceKeyStatus" class="key-status"></span>
+                    </div>
+                </div>
+                <div class="config-row">
+                    <div class="config-group">
+                        <label>Gate.io API Key</label>
+                        <input type="text" id="gateioApiKey" placeholder="输入 Gate.io API Key">
+                    </div>
+                    <div class="config-group">
+                        <label>Gate.io Secret Key</label>
+                        <input type="password" id="gateioApiSecret" placeholder="输入 Secret Key">
+                    </div>
+                    <div class="config-group">
+                        <label>&nbsp;</label>
+                        <button class="btn btn-save" onclick="saveApiKey('gateio')">💾 保存</button>
+                        <button class="btn btn-test" onclick="testConnection('gateio')">🔌 测试</button>
+                        <span id="gateioKeyStatus" class="key-status"></span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 配置面板 -->
+        <section class="config-panel">
+            <div class="config-row">
+                <div class="config-group">
+                    <label>交易所</label>
+            <select id="exchange">
+                <option value="gateio">Gate.io</option>
+                <option value="binance">Binance</option>
+            </select>
+                </div>
+                <div class="config-group">
+                    <label>币种</label>
+                    <div class="symbol-row">
+                        <select id="symbol">
+                            <option value="">-- 加载中 --</option>
+                        </select>
+                        <span id="symbolPrice" class="live-price">--</span>
+                        <span id="symbolBalance" class="balance-tag">--</span>
+                    </div>
+                </div>
+                <div class="config-group">
+                    <label>价格间隔 (%)</label>
+                    <div class="input-with-hint">
+                        <input type="text" id="priceSpacing" value="0.5" placeholder="如 0.5 表示 0.5%">
+                        <span id="priceSpacingHint" class="hint-text">≈ $--</span>
+                    </div>
+                </div>
+                <div class="config-group">
+                    <label>网格数量</label>
+                    <input type="number" id="gridCount" value="26" min="2" max="500">
+                </div>
+                <div class="config-group">
+                    <label>预计单次利润</label>
+                    <input type="text" id="estimatedProfit" value="--" readonly class="readonly-input">
+                </div>
+            </div>
+            <div class="config-row">
+                <div class="config-group">
+                    <label>USDT 数量</label>
+                    <input type="number" id="usdtAmount" value="100" step="1" min="0">
+                    <span id="usdtMinHint" class="hint-text"></span>
+                </div>
+                <div class="config-group">
+                    <label>币数量</label>
+                    <input type="number" id="coinAmount" value="" step="0.0001" min="0" placeholder="0=自动购买">
+                    <span id="coinMinHint" class="hint-text"></span>
+                </div>
+                <div class="config-group">
+                    <label>止损价格</label>
+                    <input type="text" id="stopLossPrice" value="" placeholder="留空不设止损">
+                </div>
+                <div class="config-group">
+                    <label>手续费率</label>
+                    <input type="number" id="feeRate" value="0.2" step="0.05" min="0.05">
+                    <span class="unit">%</span>
+                </div>
+            </div>
+            <div class="config-row">
+                <div class="config-group info-display">
+                    <label>最优网格范围</label>
+                    <span id="optimalRange" class="info-text">--</span>
+                </div>
+                <div class="config-group info-display">
+                    <label>24h 波动率</label>
+                    <span id="volatility" class="info-text">--</span>
+                </div>
+                <div class="config-group info-display">
+                    <label>每格金额</label>
+                    <span id="perGridAmount" class="info-text">--</span>
+                </div>
+                <div class="config-group info-display">
+                    <label>需要购买币</label>
+                    <span id="needBuyCoin" class="info-text">--</span>
+                </div>
+            </div>
+            <div class="config-row">
+                <div class="config-group">
+                    <label>&nbsp;</label>
+                    <button id="startBtn" class="btn btn-start" onclick="startGrid()">🚀 启动</button>
+                    <button id="stopBtn" class="btn btn-stop" onclick="stopGrid()" disabled>⏹ 停止</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 中间：买单和卖单 -->
+        <section class="orders-section">
+            <div class="orders-panel">
+                <h3>📋 买单列表</h3>
+                <div class="table-wrapper">
+                    <table id="buyOrdersTable">
+                        <thead>
+                            <tr>
+                                <th>价格</th>
+                                <th>数量</th>
+                                <th>金额 (USDT)</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody id="buyOrdersBody">
+                            <tr><td colspan="4" class="empty">暂无买单</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="orders-panel">
+                <h3>📋 卖单列表</h3>
+                <div class="table-wrapper">
+                    <table id="sellOrdersTable">
+                        <thead>
+                            <tr>
+                                <th>价格</th>
+                                <th>数量</th>
+                                <th>金额 (USDT)</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sellOrdersBody">
+                            <tr><td colspan="4" class="empty">暂无卖单</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- 成交记录 -->
+        <section class="trades-section">
+            <h3>📋 成交记录</h3>
+            <div class="table-wrapper">
+                <table id="tradesTable">
+                    <thead>
+                        <tr>
+                            <th>时间</th>
+                            <th>方向</th>
+                            <th>价格</th>
+                            <th>数量</th>
+                            <th>金额 (USDT)</th>
+                            <th>手续费</th>
+                            <th>利润</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tradesBody">
+                        <tr><td colspan="7" class="empty">暂无成交记录</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- 日志 -->
+        <section class="log-section">
+            <h3>📝 日志信息</h3>
+            <div id="logContainer" class="log-container">
+                <div class="log-empty">等待启动...</div>
+            </div>
+        </section>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

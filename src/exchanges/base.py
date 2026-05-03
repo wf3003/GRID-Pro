@@ -1,0 +1,81 @@
+"""交易所基类"""
+from abc import ABC, abstractmethod
+from decimal import Decimal
+from typing import Optional, List, Tuple
+from src.models.trading import Order, OrderSide, Ticker, Balance
+
+
+class ExchangeBase(ABC):
+    """交易所抽象基类"""
+    
+    def __init__(self, name: str, api_key: str, api_secret: str, base_url: str = ""):
+        self.name = name
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.base_url = base_url
+    
+    @abstractmethod
+    async def get_ticker(self, symbol: str) -> Ticker:
+        """获取行情数据"""
+        pass
+    
+    @abstractmethod
+    async def get_balance(self, asset: str) -> Balance:
+        """获取账户余额"""
+        pass
+    
+    @abstractmethod
+    async def create_limit_order(
+        self,
+        symbol: str,
+        side: OrderSide,
+        price: Decimal,
+        quantity: Decimal
+    ) -> Order:
+        """创建限价单"""
+        pass
+    
+    @abstractmethod
+    async def cancel_order(self, symbol: str, order_id: str) -> bool:
+        """取消订单"""
+        pass
+    
+    @abstractmethod
+    async def get_order(self, symbol: str, order_id: str) -> Optional[Order]:
+        """获取订单状态"""
+        pass
+    
+    @abstractmethod
+    async def get_open_orders(self, symbol: str) -> List[Order]:
+        """获取当前挂单"""
+        pass
+    
+    @abstractmethod
+    async def get_trading_fee(self, symbol: str) -> Decimal:
+        """获取交易费率"""
+        pass
+    
+    @abstractmethod
+    async def get_symbol_precision(self, symbol: str) -> Tuple[int, int]:
+        """获取交易对精度 (价格精度, 数量精度)"""
+        pass
+    
+    @abstractmethod
+    async def get_trading_pairs(self, quote_asset: str = "USDT") -> List[dict]:
+        """获取可交易币种列表
+        
+        Args:
+            quote_asset: 计价资产，如 "USDT"
+            
+        Returns:
+            List[dict]: 每个元素包含:
+                - symbol: 交易对符号，如 "BTC/USDT"
+                - base_asset: 基础资产，如 "BTC"
+                - quote_asset: 计价资产，如 "USDT"
+                - price_precision: 价格精度
+                - qty_precision: 数量精度
+                - min_qty: 最小交易数量
+                - min_amount: 最小交易金额
+                - status: 交易状态，如 "TRADING"
+        """
+        pass
