@@ -1,4 +1,4 @@
-"""网格交易策略核心实现 - 动态跟随模式"""
+"""GRID-Pro 网格策略核心实现 - 标准单向挂单模式"""
 import asyncio
 from decimal import Decimal, ROUND_DOWN
 from typing import Dict, List, Optional, Tuple, Callable
@@ -14,14 +14,15 @@ from src.models.trading import (
 
 
 class GridStrategy:
-    """网格交易策略 - 动态跟随模式
+    """GRID-Pro 网格策略 - 标准单向挂单模式
     
     核心逻辑：
-    1. 以当前价格为中心，上下各挂 N 格订单
-    2. 不设固定上下限，价格移动时整体平移网格
-    3. 成交后自动在更远位置补单
+    1. 当前价格下方挂 N 个买单（只挂买单），上方挂 N 个卖单（只挂卖单）
+    2. 买单成交后，在成交价上方一个间隔补一个卖单
+    3. 卖单成交后，在成交价下方一个间隔补一个买单
     4. 保留 1 格 USDT 和 1 格币作为缓冲，防止资金耗尽
-    5. 跌破止损价时自动停止
+    5. 价格大幅偏离时整体平移网格
+    6. 跌破止损价时自动停止
     """
     
     def __init__(self, exchange: ExchangeBase, config: GridConfig):
@@ -55,6 +56,13 @@ class GridStrategy:
         # 资金跟踪
         self._usdt_reserved: Decimal = Decimal("0")  # 已预留的 USDT
         self._coin_reserved: Decimal = Decimal("0")  # 已预留的币
+        
+        # 网格参数
+        self._grid_spacing: Decimal = Decimal("0")  # 当前价格间隔
+        self._per_grid_qty: Decimal = Decimal("0")  # 每格数量
+        self._per_grid_usdt: Decimal = Decimal("0")  # 每格 USDT 金额
+        self._buy_grids: int = 0  # 买单格数
+        self._sell_grids: int = 0  # 卖单格数
     
     def _calculate_grid_spacing(self, current_price: Decimal) -> Decimal:
         """计算每格价格间隔"""
@@ -209,7 +217,12 @@ class GridStrategy:
                 await asyncio.sleep(10)
     
     async def _process_orders(self):
-        """处理订单 - 检查成交并补单"""
+        """处理订单 - 检查成交并补单
+        
+        核心逻辑：
+        - 买单成交 → 在成交价上方一个间隔补一个卖单
+        - 卖单成交 → 在成交价下方一个间隔补一个买单
+        """
         # 获取当前行情
         ticker = await self.exchange.get_ticker(self.config.symbol)
         current_price = ticker.last
@@ -238,8 +251,10 @@ class GridStrategy:
                 if filled_order and filled_order.status == OrderStatus.FILLED:
                     await self._on_order_filled(filled_order)
                     level.buy_order = None
-                    # 在更低价格重新挂买单
-                    await self._place_buy_order(level)
+                    # 买单成交 → 在成交价上方一个间隔补一个卖单
+                    sell_price = level.buy_price + self._grid_spacing
+                    level.sell_price = self._round_price(sell_price)
+                    await self._place_sell_order(level)
             
             # 检查卖单是否成交
             if level.sell_order and level.sell_order.id not in open_order_ids:
@@ -249,8 +264,10 @@ class GridStrategy:
                 if filled_order and filled_order.status == OrderStatus.FILLED:
                     await self._on_order_filled(filled_order)
                     level.sell_order = None
-                    # 在更高价格重新挂卖单
-                    await self._place_sell_order(level)
+                    # 卖单成交 → 在成交价下方一个间隔补一个买单
+                    buy_price = level.sell_price - self._grid_spacing
+                    level.buy_price = self._round_price(buy_price)
+                    await self._place_buy_order(level)
         
         # 更新活跃订单统计
         self.status.active_buy_orders = sum(
@@ -263,64 +280,70 @@ class GridStrategy:
         )
     
     async def _place_initial_orders(self):
-        """放置初始网格订单"""
+        """放置初始网格订单
+        
+        单向挂单模式：
+        - 当前价格下方挂 N 个买单（只挂买单）
+        - 当前价格上方挂 N 个卖单（只挂卖单）
+        """
         ticker = await self.exchange.get_ticker(self.config.symbol)
         current_price = ticker.last
         
         # 计算网格参数
-        grid_spacing = self._calculate_grid_spacing(current_price)
-        per_grid_qty = self._calculate_per_grid_quantity(current_price)
+        self._grid_spacing = self._calculate_grid_spacing(current_price)
+        self._per_grid_qty = self._calculate_per_grid_quantity(current_price)
+        self._per_grid_usdt = self._calculate_per_grid_amount()
+        
         half_grids = self.config.grid_count // 2
         
         # 保留 1 格缓冲
-        buy_grids = max(1, half_grids - 1)
-        sell_grids = max(1, half_grids - 1)
+        self._buy_grids = max(1, half_grids - 1)
+        self._sell_grids = max(1, half_grids - 1)
         
         self.grid_levels = []
         
-        # 创建买单网格（低于当前价）
-        for i in range(1, buy_grids + 1):
-            buy_price = current_price - (grid_spacing * Decimal(str(i)))
+        # 创建买单网格（低于当前价，只挂买单）
+        for i in range(1, self._buy_grids + 1):
+            buy_price = current_price - (self._grid_spacing * Decimal(str(i)))
             if buy_price <= Decimal("0"):
                 continue
-            
-            sell_price = buy_price + grid_spacing
             
             level = GridLevel(
                 level=i,
                 buy_price=self._round_price(buy_price),
-                sell_price=self._round_price(sell_price),
-                quantity=per_grid_qty,
+                sell_price=Decimal("0"),  # 初始没有卖单
+                quantity=self._per_grid_qty,
                 is_active=False
             )
             self.grid_levels.append(level)
         
-        # 创建卖单网格（高于当前价）
-        for i in range(1, sell_grids + 1):
-            sell_price = current_price + (grid_spacing * Decimal(str(i)))
-            buy_price = sell_price - grid_spacing
+        # 创建卖单网格（高于当前价，只挂卖单）
+        for i in range(1, self._sell_grids + 1):
+            sell_price = current_price + (self._grid_spacing * Decimal(str(i)))
             
             level = GridLevel(
-                level=i + buy_grids,
-                buy_price=self._round_price(buy_price),
+                level=i + self._buy_grids,
+                buy_price=Decimal("0"),  # 初始没有买单
                 sell_price=self._round_price(sell_price),
-                quantity=per_grid_qty,
+                quantity=self._per_grid_qty,
                 is_active=False
             )
             self.grid_levels.append(level)
         
         # 按价格排序
-        self.grid_levels.sort(key=lambda x: x.buy_price)
+        self.grid_levels.sort(key=lambda x: x.buy_price if x.buy_price > 0 else x.sell_price)
         
-        # 挂买单
+        # 挂买单（只挂买单）
         for level in self.grid_levels:
-            await self._place_buy_order(level)
-            level.is_active = True
+            if level.buy_price > 0:
+                await self._place_buy_order(level)
+                level.is_active = True
         
-        # 挂卖单
+        # 挂卖单（只挂卖单）
         for level in self.grid_levels:
-            await self._place_sell_order(level)
-            level.is_active = True
+            if level.sell_price > 0:
+                await self._place_sell_order(level)
+                level.is_active = True
         
         logger.info(f"初始订单已放置: {self.status.active_buy_orders} 买单, "
                     f"{self.status.active_sell_orders} 卖单")
@@ -463,8 +486,8 @@ class GridStrategy:
         if not self.grid_levels:
             return
         
-        buy_prices = [l.buy_price for l in self.grid_levels if l.buy_price]
-        sell_prices = [l.sell_price for l in self.grid_levels if l.sell_price]
+        buy_prices = [l.buy_price for l in self.grid_levels if l.buy_price and l.buy_price > 0]
+        sell_prices = [l.sell_price for l in self.grid_levels if l.sell_price and l.sell_price > 0]
         
         if not buy_prices or not sell_prices:
             return
@@ -491,8 +514,8 @@ class GridStrategy:
         self.status.last_adjust_time = datetime.now()
         
         # 计算新范围
-        new_buy_prices = [l.buy_price for l in self.grid_levels if l.buy_price]
-        new_sell_prices = [l.sell_price for l in self.grid_levels if l.sell_price]
+        new_buy_prices = [l.buy_price for l in self.grid_levels if l.buy_price and l.buy_price > 0]
+        new_sell_prices = [l.sell_price for l in self.grid_levels if l.sell_price and l.sell_price > 0]
         new_range = [float(min(new_buy_prices)), float(max(new_sell_prices))]
         
         # 通知调整回调
@@ -520,8 +543,8 @@ class GridStrategy:
         """获取交易统计"""
         # 计算当前网格范围
         if self.grid_levels:
-            buy_prices = [l.buy_price for l in self.grid_levels if l.buy_price]
-            sell_prices = [l.sell_price for l in self.grid_levels if l.sell_price]
+            buy_prices = [l.buy_price for l in self.grid_levels if l.buy_price and l.buy_price > 0]
+            sell_prices = [l.sell_price for l in self.grid_levels if l.sell_price and l.sell_price > 0]
             grid_range = [
                 float(min(buy_prices)) if buy_prices else 0,
                 float(max(sell_prices)) if sell_prices else 0

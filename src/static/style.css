@@ -64,8 +64,8 @@ body {
 /* ========== 信息栏 ========== */
 .info-bar {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
-    gap: 12px;
+    grid-template-columns: repeat(9, 1fr);
+    gap: 8px;
     margin-bottom: 20px;
 }
 
@@ -236,6 +236,10 @@ body {
 
 .hint-text.invalid {
     color: #f44336;
+}
+
+.hint-text.warning {
+    color: #ff9800;
 }
 
 /* 信息显示 */

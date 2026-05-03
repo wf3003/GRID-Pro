@@ -1,4 +1,4 @@
-"""网格交易机器人主程序"""
+"""GRID-Pro 主程序"""
 import asyncio
 import signal
 import sys
@@ -17,7 +17,7 @@ from src.web_api import run_web_server
 
 
 class GridTradingBot:
-    """网格交易机器人主控器"""
+    """GRID-Pro 主控器"""
     
     def __init__(self, config_path: str = "config/config.json"):
         self.config_path = config_path
@@ -50,7 +50,7 @@ class GridTradingBot:
     async def initialize(self):
         """初始化机器人"""
         logger.info("=" * 60)
-        logger.info("网格交易机器人启动中...")
+        logger.info("GRID-Pro 启动中...")
         logger.info("=" * 60)
         
         # 加载配置

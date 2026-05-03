@@ -60,7 +60,7 @@ class ApiKeyConfig(BaseModel):
 
 
 class GridBotAPI:
-    """网格交易 API 服务"""
+    """GRID-Pro API 服务"""
     
     def __init__(self):
         self.app: Optional[FastAPI] = None
@@ -80,7 +80,7 @@ class GridBotAPI:
             if self.strategy:
                 await self.strategy.stop()
         
-        app = FastAPI(title="网格交易控制台", lifespan=lifespan)
+        app = FastAPI(title="GRID-Pro", lifespan=lifespan)
         self.app = app
         
         # 挂载静态文件
@@ -189,7 +189,7 @@ class GridBotAPI:
         
         @app.post("/api/start")
         async def start_grid(req: StartGridRequest):
-            """启动网格交易"""
+            """启动 GRID-Pro"""
             if self._running:
                 raise HTTPException(400, "网格策略已在运行中")
             
@@ -260,7 +260,7 @@ class GridBotAPI:
         
         @app.post("/api/stop")
         async def stop_grid():
-            """停止网格交易"""
+            """停止 GRID-Pro"""
             if not self._running or not self.strategy:
                 raise HTTPException(400, "没有运行中的网格策略")
             

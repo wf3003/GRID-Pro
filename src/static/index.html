@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>网格交易控制台</title>
+    <title>GRID-Pro 网格交易</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div class="container">
         <!-- 顶部标题 -->
         <header class="header">
-            <h1>🔧 网格交易控制台</h1>
+            <h1>🔧 GRID-Pro</h1>
             <span id="connectionStatus" class="status-badge disconnected">未连接</span>
         </header>
 
@@ -21,24 +21,36 @@
                 <div class="info-value" id="currentPrice">--</div>
             </div>
             <div class="info-card">
-                <div class="info-label">网格间距</div>
-                <div class="info-value" id="gridSpacing">--</div>
+                <div class="info-label">总收益 (USDT)</div>
+                <div class="info-value" id="totalProfit">0.00</div>
             </div>
             <div class="info-card">
-                <div class="info-label">总交易次数</div>
+                <div class="info-label">网格收益 (USDT)</div>
+                <div class="info-value" id="gridProfit">0.00</div>
+            </div>
+            <div class="info-card">
+                <div class="info-label">浮动盈亏 (USDT)</div>
+                <div class="info-value" id="floatingPnl">0.00</div>
+            </div>
+            <div class="info-card">
+                <div class="info-label">年化收益率</div>
+                <div class="info-value" id="annualizedReturn">0%</div>
+            </div>
+            <div class="info-card">
+                <div class="info-label">总投资 (USDT)</div>
+                <div class="info-value" id="totalInvestment">0.00</div>
+            </div>
+            <div class="info-card">
+                <div class="info-label">交易次数</div>
                 <div class="info-value" id="totalTrades">0</div>
             </div>
             <div class="info-card">
-                <div class="info-label">总利润</div>
-                <div class="info-value profit" id="totalProfit">$0.00</div>
+                <div class="info-label">运行时长</div>
+                <div class="info-value" id="runningTimeDisplay">--</div>
             </div>
             <div class="info-card">
-                <div class="info-label">USDT 余额</div>
-                <div class="info-value" id="usdtBalance">--</div>
-            </div>
-            <div class="info-card">
-                <div class="info-label">币余额</div>
-                <div class="info-value" id="coinBalance">--</div>
+                <div class="info-label">价格区间 (USDT)</div>
+                <div class="info-value" id="priceRangeDisplay">--</div>
             </div>
         </section>
 
@@ -117,6 +129,7 @@
                 <div class="config-group">
                     <label>USDT 金额</label>
                     <input type="number" id="usdtAmount" value="100" step="1" min="0">
+                    <span id="usdtEstimate" class="hint-text" style="color:#4a90d9;"></span>
                     <span id="usdtMinHint" class="hint-text"></span>
                 </div>
                 <div class="config-group">
@@ -127,7 +140,8 @@
                     <label>单格收益率 (%)</label>
                     <div class="input-with-hint">
                         <input type="text" id="priceSpacing" value="0.5" placeholder="如 0.5 表示 0.5%">
-                        <span id="priceSpacingHint" class="hint-text">≈ $--</span>
+                        <span id="priceSpacingHint" class="hint-text">价格间隔: $--</span>
+                        <span id="netProfitHint" class="hint-text"></span>
                     </div>
                 </div>
                 <div class="config-group">
@@ -151,7 +165,7 @@
                 </div>
                 <div class="config-group">
                     <label>手续费率</label>
-                    <input type="number" id="feeRate" value="0.2" step="0.05" min="0.05">
+                    <input type="number" id="feeRate" value="0.1" step="0.05" min="0.05">
                     <span class="unit">%</span>
                 </div>
             </div>
@@ -167,6 +181,7 @@
                 <div class="config-group info-display">
                     <label>每格金额</label>
                     <span id="perGridAmount" class="info-text">--</span>
+                    <span id="minOrderHint" class="hint-text"></span>
                 </div>
                 <div class="config-group info-display">
                     <label>需要购买币</label>

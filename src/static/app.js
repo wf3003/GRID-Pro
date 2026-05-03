@@ -182,19 +182,21 @@ async function updateTicker() {
     if (data && data.price > 0) {
         currentPrice = data.price;
         tickerData = data;
-        document.getElementById('symbolPrice').textContent = `$${data.price.toFixed(4)}`;
-        document.getElementById('currentPrice').textContent = `$${data.price.toFixed(4)}`;
+        document.getElementById('symbolPrice').textContent = `$${formatPrice(data.price)}`;
+        document.getElementById('currentPrice').textContent = `$${formatPrice(data.price)}`;
         
         if (data.high_24h && data.low_24h && data.high_24h > 0 && data.low_24h > 0) {
             const volatility = ((data.high_24h - data.low_24h) / data.low_24h) * 100;
             document.getElementById('volatility').textContent = `${volatility.toFixed(2)}%`;
             document.getElementById('optimalRange').textContent = 
-                `$${data.low_24h.toFixed(4)} ~ $${data.high_24h.toFixed(4)}`;
+                `$${formatPrice(data.low_24h)} ~ $${formatPrice(data.high_24h)}`;
             
+            const feeRate = parseFloat(document.getElementById('feeRate').value) || 0.1;
+            const minSpacing = feeRate * 2;  // 最低不能低于手续费合计的 2 倍
             const optimalSpacing = (volatility / 26).toFixed(2);
             const spacingInput = document.getElementById('priceSpacing');
             if (!spacingInput.dataset.userModified) {
-                spacingInput.value = Math.max(0.1, Math.min(5, optimalSpacing));
+                spacingInput.value = Math.max(minSpacing, Math.min(5, optimalSpacing));
             }
         }
         
@@ -240,47 +242,109 @@ function updateCalculations() {
     const lowerPrice = parseFloat(document.getElementById('lowerPrice').value) || 0;
     const upperPrice = parseFloat(document.getElementById('upperPrice').value) || 0;
     
-    // 网格分配：一半买单，一半卖单
+    // 单向挂单模式：
+    // - 当前价格下方挂 N 个买单（只挂买单）
+    // - 当前价格上方挂 N 个卖单（只挂卖单）
+    // - 3/4 资金挂单，1/4 预留缓冲
     const halfGrids = Math.floor(gridCount / 2);
-    const buyGrids = Math.max(1, halfGrids - 1);  // 买单格数（扣除中间格）
-    const sellGrids = Math.max(1, halfGrids - 1); // 卖单格数
+    const buyGrids = Math.max(1, halfGrids);  // 买单格数（下方）
+    const sellGrids = Math.max(1, halfGrids); // 卖单格数（上方）
     
-    // 计算每格金额
+    // 资金分配：3/4 挂单，1/4 预留
+    const investRatio = 0.75;
+    const reserveRatio = 0.25;
+    
+    // 互动计算：输入 USDT 自动算币，输入币自动算 USDT
     let perGridUsdt = 0;
     let perGridQty = 0;
+    let buyCoinUsdt = 0;  // 需要用来买币的 USDT 金额
+    let estimatedCoin = 0;  // 根据 USDT 估算的币数量
+    let estimatedUsdt = 0;  // 根据币数量估算的 USDT
     
     if (usdtAmount > 0 && coinAmount > 0) {
-        // 两者都填：分别计算，取较大值
-        const usdtPerGrid = usdtAmount / buyGrids;
-        const coinPerGrid = coinAmount / sellGrids;
-        perGridUsdt = Math.max(usdtPerGrid, coinPerGrid * price);
-        perGridQty = perGridUsdt / price;
+        // 两者都填：分别计算
+        const usdtPerGrid = (usdtAmount * investRatio) / buyGrids;
+        const coinPerGrid = (coinAmount * investRatio) / sellGrids;
+        perGridUsdt = usdtPerGrid;
+        perGridQty = coinPerGrid;
+        buyCoinUsdt = 0;  // 已有币，不需要买
     } else if (usdtAmount > 0) {
-        // 只填了 USDT
-        perGridUsdt = usdtAmount / buyGrids;
-        perGridQty = perGridUsdt / price;
+        // 只填了 USDT：75% 用于挂单，其中一半挂买单，一半买币挂卖单
+        const investUsdt = usdtAmount * investRatio;  // 75% 用于挂单
+        const buyOrderUsdt = investUsdt / 2;  // 一半挂买单
+        const sellOrderUsdt = investUsdt / 2;  // 一半买币挂卖单
+        perGridUsdt = buyOrderUsdt / buyGrids;
+        perGridQty = (sellOrderUsdt / price) / sellGrids;
+        buyCoinUsdt = sellOrderUsdt;  // 需要买币的金额
+        
+        // 估算需要的总币数量（卖单所需币 + 预留）
+        estimatedCoin = perGridQty * sellGrids + perGridQty;  // 挂单 + 1格预留
     } else if (coinAmount > 0) {
         // 只填了币数量
-        perGridQty = coinAmount / sellGrids;
+        perGridQty = (coinAmount * investRatio) / sellGrids;
         perGridUsdt = perGridQty * price;
+        buyCoinUsdt = 0;
+        
+        // 估算需要的总 USDT（买单所需 USDT + 预留）
+        estimatedUsdt = perGridUsdt * buyGrids + perGridUsdt;  // 挂单 + 1格预留
+        // 实际总投资 = 估算 USDT / 0.75 * 2（因为买单+卖单各一半）
+        estimatedUsdt = (perGridUsdt * buyGrids + perGridUsdt) * 2;  // 买单+卖单+预留
     }
     
-    // 计算所需最小金额
-    const minUsdt = perGridUsdt * buyGrids;
-    const minCoin = perGridQty * sellGrids;
+    // 显示互动估算值
+    const usdtEstimateEl = document.getElementById('usdtEstimate');
+    if (usdtAmount > 0 && estimatedCoin > 0) {
+        usdtEstimateEl.textContent = `≈ ${formatQty(estimatedCoin)} 币`;
+    } else {
+        usdtEstimateEl.textContent = '';
+    }
+    
+    // 计算实际挂单金额
+    const orderUsdt = perGridUsdt * buyGrids;  // 买单挂单金额
+    const orderCoin = perGridQty * sellGrids;  // 卖单所需币量
+    
+    // 预留缓冲（1/4 资金）
+    const reservedUsdt = usdtAmount * reserveRatio;
+    const reservedCoin = coinAmount * reserveRatio;
+    
+    // 总 USDT 需求 = 买单挂单 + 买币金额 + 预留
+    const totalUsdtNeeded = orderUsdt + buyCoinUsdt + reservedUsdt;
+    // 总币需求 = 卖单所需币 + 预留
+    const totalCoinNeeded = orderCoin + reservedCoin;
+    
+    // 最小交易金额检查（Gate.io 最小挂单金额为 1 USDT）
+    const MIN_ORDER_USDT = 1.0;
+    const perGridUsdtBuy = perGridUsdt;  // 买单每格 USDT
+    const perGridUsdtSell = perGridQty * price;  // 卖单每格 USDT 价值
+    const minOrderOk = perGridUsdtBuy >= MIN_ORDER_USDT && perGridUsdtSell >= MIN_ORDER_USDT;
     
     // 显示每格金额
     document.getElementById('perGridAmount').textContent = 
-        `$${perGridUsdt.toFixed(2)} / ${perGridQty.toFixed(6)} 币`;
+        `$${perGridUsdt.toFixed(2)} / ${formatQty(perGridQty)} 币`;
+    
+    // 最小交易金额提示
+    const minOrderHint = document.getElementById('minOrderHint');
+    if (minOrderHint) {
+        if (perGridUsdtBuy < MIN_ORDER_USDT || perGridUsdtSell < MIN_ORDER_USDT) {
+            minOrderHint.textContent = `❌ 每格金额 $${Math.min(perGridUsdtBuy, perGridUsdtSell).toFixed(2)} 低于最小 $${MIN_ORDER_USDT}，请增加资金或减少网格数`;
+            minOrderHint.className = 'hint-text invalid';
+        } else {
+            minOrderHint.textContent = `✅ 每格 ≥ $${MIN_ORDER_USDT}，满足最小交易要求`;
+            minOrderHint.className = 'hint-text valid';
+        }
+    }
     
     // USDT 充足性检查
     const usdtHint = document.getElementById('usdtMinHint');
     if (usdtAmount > 0) {
-        if (usdtAmount >= minUsdt) {
-            usdtHint.textContent = `✅ 足够 (最少 $${minUsdt.toFixed(2)})`;
+        if (usdtAmount >= totalUsdtNeeded) {
+            usdtHint.textContent = `✅ 足够 (买单: $${orderUsdt.toFixed(2)}, 买币: $${buyCoinUsdt.toFixed(2)}, 预留: $${reservedUsdt.toFixed(2)})`;
             usdtHint.className = 'hint-text valid';
+        } else if (usdtAmount >= orderUsdt + buyCoinUsdt) {
+            usdtHint.textContent = `⚠️ 仅够挂单 (建议预留 1/4: $${reservedUsdt.toFixed(2)})`;
+            usdtHint.className = 'hint-text warning';
         } else {
-            usdtHint.textContent = `❌ 不足 (最少 $${minUsdt.toFixed(2)})`;
+            usdtHint.textContent = `❌ 不足 (最少 $${totalUsdtNeeded.toFixed(2)})`;
             usdtHint.className = 'hint-text invalid';
         }
     } else {
@@ -290,11 +354,14 @@ function updateCalculations() {
     // 币充足性检查
     const coinHint = document.getElementById('coinMinHint');
     if (coinAmount > 0) {
-        if (coinAmount >= minCoin) {
-            coinHint.textContent = `✅ 足够 (最少 ${minCoin.toFixed(6)})`;
+        if (coinAmount >= totalCoinNeeded) {
+            coinHint.textContent = `✅ 足够 (挂单: ${formatQty(orderCoin)}, 预留: ${formatQty(reservedCoin)})`;
             coinHint.className = 'hint-text valid';
+        } else if (coinAmount >= orderCoin) {
+            coinHint.textContent = `⚠️ 仅够挂单 (建议预留 1/4: ${formatQty(reservedCoin)})`;
+            coinHint.className = 'hint-text warning';
         } else {
-            coinHint.textContent = `❌ 不足 (最少 ${minCoin.toFixed(6)})`;
+            coinHint.textContent = `❌ 不足 (最少 ${formatQty(totalCoinNeeded)})`;
             coinHint.className = 'hint-text invalid';
         }
     } else {
@@ -304,38 +371,60 @@ function updateCalculations() {
     // 需要额外购买的币
     let needBuy = 0;
     let needBuyUsdt = 0;
-    if (coinAmount > 0 && currentBalance.coin < minCoin) {
-        needBuy = minCoin - currentBalance.coin;
-        needBuyUsdt = needBuy * price;
-    } else if (usdtAmount > 0 && coinAmount === 0) {
-        // 只填 USDT 时，需要买入所有币
-        needBuy = minCoin - currentBalance.coin;
-        needBuyUsdt = needBuy * price;
+    
+    if (coinAmount > 0) {
+        // 用户填了币数量：检查已有币是否足够
+        if (currentBalance.coin < totalCoinNeeded) {
+            needBuy = totalCoinNeeded - currentBalance.coin;
+            needBuyUsdt = needBuy * price;
+        }
+    } else if (usdtAmount > 0) {
+        // 只填 USDT：需要买币来挂卖单
+        const needCoinTotal = orderCoin + reservedCoin;
+        if (currentBalance.coin < needCoinTotal) {
+            needBuy = needCoinTotal - currentBalance.coin;
+            needBuyUsdt = needBuy * price;
+        }
     }
     
     document.getElementById('needBuyCoin').textContent = 
         needBuy > 0.000001 
-            ? `需要 ${needBuy.toFixed(6)} 币 (≈ $${needBuyUsdt.toFixed(2)})` 
+            ? `需要 ${formatQty(needBuy)} 币 (≈ $${needBuyUsdt.toFixed(2)})` 
             : '✅ 已足够';
     
     // 单格收益率
     const spacingPct = spacing / 100;
-    const profitPct = spacingPct - (feeRate / 100) * 2;
+    const totalFeePct = (feeRate / 100) * 2;  // 买卖合计手续费
+    const profitPct = spacingPct - totalFeePct;  // 净收益率
     const profitPerTrade = profitPct * perGridUsdt;
-    document.getElementById('estimatedProfit').value = 
-        profitPct > 0 ? `${(profitPct * 100).toFixed(3)}% (≈ $${profitPerTrade.toFixed(4)})` : '亏损';
+    
+    // 显示净收益率
+    const netProfitHint = document.getElementById('netProfitHint');
+    if (netProfitHint) {
+        const netPct = profitPct * 100;
+        if (netPct > 0) {
+            netProfitHint.textContent = `净收益率: +${netPct.toFixed(3)}% (≈ $${profitPerTrade.toFixed(4)})`;
+            netProfitHint.className = 'hint-text valid';
+        } else if (netPct === 0) {
+            netProfitHint.textContent = `净收益率: 0% (刚好够手续费)`;
+            netProfitHint.className = 'hint-text';
+        } else {
+            netProfitHint.textContent = `净收益率: ${netPct.toFixed(3)}% ❌ 亏损 (手续费已 ${(totalFeePct * 100).toFixed(2)}%)`;
+            netProfitHint.className = 'hint-text invalid';
+        }
+    }
     
     // 网格间距（美元）
     const gridSpacing = price * spacingPct;
-    document.getElementById('gridSpacing').textContent = `$${gridSpacing.toFixed(4)}`;
-    document.getElementById('priceSpacingHint').textContent = `≈ $${gridSpacing.toFixed(4)}`;
+    document.getElementById('gridSpacing').textContent = `$${formatPrice(gridSpacing)}`;
+    document.getElementById('priceSpacingHint').textContent = `价格间隔: $${formatPrice(gridSpacing)}`;
     
     // 启动按钮状态
     const startBtn = document.getElementById('startBtn');
-    if (usdtAmount > 0 && usdtAmount < minUsdt) {
+    if (usdtAmount > 0 && usdtAmount < orderUsdt) {
         startBtn.disabled = true;
         startBtn.title = 'USDT 数量不足';
-    } else if (coinAmount > 0 && coinAmount < minCoin) {
+    } else if (coinAmount > 0 && coinAmount < orderCoin) {
         startBtn.disabled = true;
         startBtn.title = '币数量不足';
     } else if (usdtAmount <= 0 && coinAmount <= 0) {
@@ -470,13 +559,57 @@ async function updateStatus() {
 function updateUI(data) {
     if (!data) return;
     
+    // 更新顶部信息栏
     if (data.strategy) {
         const s = data.strategy;
-        document.getElementById('totalTrades').textContent = s.total_trades || 0;
-        document.getElementById('totalProfit').textContent = `$${(s.total_pnl || 0).toFixed(4)}`;
         
+        // 当前价格
         if (s.current_price) {
-            document.getElementById('currentPrice').textContent = `$${s.current_price.toFixed(4)}`;
+            document.getElementById('currentPrice').textContent = `$${formatPrice(s.current_price)}`;
+        }
+        
+        // 总收益 (USDT) - 含百分比
+        const totalProfit = data.total_profit || 0;
+        const totalInvestment = data.config?.total_investment || 0;
+        const totalProfitEl = document.getElementById('totalProfit');
+        const profitPct = totalInvestment > 0 ? (totalProfit / totalInvestment) * 100 : 0;
+        totalProfitEl.textContent = `${totalProfit.toFixed(2)} ${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(2)}%`;
+        totalProfitEl.className = `info-value ${totalProfit >= 0 ? 'profit' : 'loss'}`;
+        
+        // 网格收益 (USDT)
+        const gridProfit = data.grid_profit || 0;
+        const gridProfitEl = document.getElementById('gridProfit');
+        gridProfitEl.textContent = `${gridProfit >= 0 ? '+' : ''}${gridProfit.toFixed(2)}`;
+        gridProfitEl.className = `info-value ${gridProfit >= 0 ? 'profit' : 'loss'}`;
+        
+        // 浮动盈亏 (USDT)
+        const floatingPnl = data.floating_pnl || 0;
+        const floatingPnlEl = document.getElementById('floatingPnl');
+        floatingPnlEl.textContent = `${floatingPnl >= 0 ? '+' : ''}${floatingPnl.toFixed(2)}`;
+        floatingPnlEl.className = `info-value ${floatingPnl >= 0 ? 'profit' : 'loss'}`;
+        
+        // 年化收益率
+        const annualized = data.annualized_return || 0;
+        const annualizedEl = document.getElementById('annualizedReturn');
+        annualizedEl.textContent = `${annualized >= 0 ? '+' : ''}${annualized.toFixed(2)}%`;
+        annualizedEl.className = `info-value ${annualized >= 0 ? 'profit' : 'loss'}`;
+        
+        // 总投资 (USDT)
+        document.getElementById('totalInvestment').textContent = totalInvestment.toFixed(2);
+        
+        // 交易次数
+        document.getElementById('totalTrades').textContent = s.total_trades || 0;
+        
+        // 运行时长
+        document.getElementById('runningTimeDisplay').textContent = data.running_time || '--';
+        
+        // 价格区间 (USDT)
+        const gridRange = s.grid_range;
+        if (gridRange && gridRange[0] > 0) {
+            document.getElementById('priceRangeDisplay').textContent = 
+                `${formatPrice(gridRange[0])} - ${formatPrice(gridRange[1])}`;
+        } else {
+            document.getElementById('priceRangeDisplay').textContent = '--';
         }
     }
     
@@ -742,6 +875,26 @@ function updateTradesTable(trades) {
 }
 
 // ========== 辅助函数 ==========
+// 智能格式化价格：根据数值大小自动调整小数位数
+function formatPrice(value) {
+    if (!value || value <= 0) return '--';
+    if (value >= 1) return value.toFixed(4);
+    if (value >= 0.001) return value.toFixed(6);
+    if (value >= 0.000001) return value.toFixed(8);
+    if (value >= 0.00000001) return value.toFixed(10);
+    return value.toFixed(12);
+}
+
+// 智能格式化数量：根据数值大小自动调整小数位数
+function formatQty(value) {
+    if (!value || value <= 0) return '0';
+    if (value >= 1) return value.toFixed(4);
+    if (value >= 0.001) return value.toFixed(6);
+    if (value >= 0.000001) return value.toFixed(8);
+    if (value >= 0.00000001) return value.toFixed(10);
+    return value.toFixed(12);
+}
+
 function formatDate(dateStr) {
     try {
         const d = new Date(dateStr);

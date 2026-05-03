@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================
-# 网格交易控制台 - 一键启动脚本
+# GRID-Pro - 一键启动脚本
 # ============================================
 
 set -e
@@ -12,8 +12,23 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}  网格交易控制台 v1.0${NC}"
+echo -e "${GREEN}  GRID-Pro v1.0${NC}"
 echo -e "${GREEN}========================================${NC}"
+
+# 检查并杀掉旧进程
+OLD_PID=$(pgrep -f "python3 -m src.web_api" 2>/dev/null || true)
+if [ -n "$OLD_PID" ]; then
+    echo -e "${YELLOW}⚠ 检测到旧进程 (PID: $OLD_PID)，正在关闭...${NC}"
+    kill $OLD_PID 2>/dev/null
+    sleep 2
+    # 如果没关掉，强制杀掉
+    if kill -0 $OLD_PID 2>/dev/null; then
+        kill -9 $OLD_PID 2>/dev/null
+        echo -e "${GREEN}✅ 旧进程已强制关闭${NC}"
+    else
+        echo -e "${GREEN}✅ 旧进程已关闭${NC}"
+    fi
+fi
 
 # 检查虚拟环境是否完整
 VENV_OK=false

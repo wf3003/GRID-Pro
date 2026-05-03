@@ -1,1 +1,1 @@
-# Grid Trading Bot - 自动网格交易套利程序
+# GRID-Pro - 自动网格交易套利程序
