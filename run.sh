@@ -15,13 +15,22 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  网格交易控制台 v1.0${NC}"
 echo -e "${GREEN}========================================${NC}"
 
-# 检查虚拟环境
-if [ ! -d "venv" ]; then
-    echo -e "${YELLOW}⚠ 未检测到虚拟环境，正在创建...${NC}"
+# 检查虚拟环境是否完整
+VENV_OK=false
+if [ -d "venv" ] && [ -f "venv/bin/activate" ]; then
+    VENV_OK=true
+fi
+
+# 如果虚拟环境不完整或不存在，重新创建
+if [ "$VENV_OK" = false ]; then
+    echo -e "${YELLOW}⚠ 未检测到完整的虚拟环境，正在创建...${NC}"
+    rm -rf venv
     python3 -m venv venv
+    echo -e "${GREEN}✅ 虚拟环境已创建${NC}"
+    echo -e "${YELLOW}📦 正在安装依赖...${NC}"
     source venv/bin/activate
     pip install -r requirements.txt
-    echo -e "${GREEN}✅ 虚拟环境已创建${NC}"
+    echo -e "${GREEN}✅ 依赖安装完成${NC}"
 else
     source venv/bin/activate
 fi

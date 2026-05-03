@@ -240,21 +240,42 @@ function updateCalculations() {
     const lowerPrice = parseFloat(document.getElementById('lowerPrice').value) || 0;
     const upperPrice = parseFloat(document.getElementById('upperPrice').value) || 0;
     
+    // 网格分配：一半买单，一半卖单
     const halfGrids = Math.floor(gridCount / 2);
-    const buyGrids = Math.max(1, halfGrids - 1);
-    const sellGrids = Math.max(1, halfGrids - 1);
+    const buyGrids = Math.max(1, halfGrids - 1);  // 买单格数（扣除中间格）
+    const sellGrids = Math.max(1, halfGrids - 1); // 卖单格数
     
-    const perGridUsdt = usdtAmount > 0 ? usdtAmount / buyGrids : 0;
-    const perGridQty = coinAmount > 0 ? coinAmount / sellGrids : (perGridUsdt > 0 ? perGridUsdt / price : 0);
+    // 计算每格金额
+    let perGridUsdt = 0;
+    let perGridQty = 0;
     
+    if (usdtAmount > 0 && coinAmount > 0) {
+        // 两者都填：分别计算，取较大值
+        const usdtPerGrid = usdtAmount / buyGrids;
+        const coinPerGrid = coinAmount / sellGrids;
+        perGridUsdt = Math.max(usdtPerGrid, coinPerGrid * price);
+        perGridQty = perGridUsdt / price;
+    } else if (usdtAmount > 0) {
+        // 只填了 USDT
+        perGridUsdt = usdtAmount / buyGrids;
+        perGridQty = perGridUsdt / price;
+    } else if (coinAmount > 0) {
+        // 只填了币数量
+        perGridQty = coinAmount / sellGrids;
+        perGridUsdt = perGridQty * price;
+    }
+    
+    // 计算所需最小金额
     const minUsdt = perGridUsdt * buyGrids;
     const minCoin = perGridQty * sellGrids;
     
+    // 显示每格金额
     document.getElementById('perGridAmount').textContent = 
         `$${perGridUsdt.toFixed(2)} / ${perGridQty.toFixed(6)} 币`;
     
+    // USDT 充足性检查
     const usdtHint = document.getElementById('usdtMinHint');
-    if (minUsdt > 0) {
+    if (usdtAmount > 0) {
         if (usdtAmount >= minUsdt) {
             usdtHint.textContent = `✅ 足够 (最少 $${minUsdt.toFixed(2)})`;
             usdtHint.className = 'hint-text valid';
@@ -262,10 +283,13 @@ function updateCalculations() {
             usdtHint.textContent = `❌ 不足 (最少 $${minUsdt.toFixed(2)})`;
             usdtHint.className = 'hint-text invalid';
         }
+    } else {
+        usdtHint.textContent = '';
     }
     
+    // 币充足性检查
     const coinHint = document.getElementById('coinMinHint');
-    if (minCoin > 0) {
+    if (coinAmount > 0) {
         if (coinAmount >= minCoin) {
             coinHint.textContent = `✅ 足够 (最少 ${minCoin.toFixed(6)})`;
             coinHint.className = 'hint-text valid';
@@ -273,23 +297,40 @@ function updateCalculations() {
             coinHint.textContent = `❌ 不足 (最少 ${minCoin.toFixed(6)})`;
             coinHint.className = 'hint-text invalid';
         }
+    } else {
+        coinHint.textContent = '';
     }
     
-    const needBuy = Math.max(0, minCoin - currentBalance.coin);
-    const needBuyUsdt = needBuy * price;
-    document.getElementById('needBuyCoin').textContent = 
-        needBuy > 0 ? `需要 ${needBuy.toFixed(6)} 币 (≈ $${needBuyUsdt.toFixed(2)})` : '✅ 已足够';
+    // 需要额外购买的币
+    let needBuy = 0;
+    let needBuyUsdt = 0;
+    if (coinAmount > 0 && currentBalance.coin < minCoin) {
+        needBuy = minCoin - currentBalance.coin;
+        needBuyUsdt = needBuy * price;
+    } else if (usdtAmount > 0 && coinAmount === 0) {
+        // 只填 USDT 时，需要买入所有币
+        needBuy = minCoin - currentBalance.coin;
+        needBuyUsdt = needBuy * price;
+    }
     
+    document.getElementById('needBuyCoin').textContent = 
+        needBuy > 0.000001 
+            ? `需要 ${needBuy.toFixed(6)} 币 (≈ $${needBuyUsdt.toFixed(2)})` 
+            : '✅ 已足够';
+    
+    // 单格收益率
     const spacingPct = spacing / 100;
     const profitPct = spacingPct - (feeRate / 100) * 2;
     const profitPerTrade = profitPct * perGridUsdt;
     document.getElementById('estimatedProfit').value = 
         profitPct > 0 ? `${(profitPct * 100).toFixed(3)}% (≈ $${profitPerTrade.toFixed(4)})` : '亏损';
     
+    // 网格间距（美元）
     const gridSpacing = price * spacingPct;
     document.getElementById('gridSpacing').textContent = `$${gridSpacing.toFixed(4)}`;
     document.getElementById('priceSpacingHint').textContent = `≈ $${gridSpacing.toFixed(4)}`;
     
+    // 启动按钮状态
     const startBtn = document.getElementById('startBtn');
     if (usdtAmount > 0 && usdtAmount < minUsdt) {
         startBtn.disabled = true;
@@ -297,6 +338,9 @@ function updateCalculations() {
     } else if (coinAmount > 0 && coinAmount < minCoin) {
         startBtn.disabled = true;
         startBtn.title = '币数量不足';
+    } else if (usdtAmount <= 0 && coinAmount <= 0) {
+        startBtn.disabled = true;
+        startBtn.title = '请填写 USDT 金额或币数量';
     } else {
         startBtn.disabled = isRunning;
         startBtn.title = '';
