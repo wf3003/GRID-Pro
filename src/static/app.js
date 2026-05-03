@@ -5,6 +5,7 @@ let currentPrice = 0;
 let currentBalance = { usdt: 0, coin: 0 };
 let tickerData = null;
 let reconnectTimer = null;
+let statusTimer = null;
 
 // ========== 初始化 ==========
 document.addEventListener('DOMContentLoaded', () => {
@@ -29,10 +30,15 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('usdtAmount').addEventListener('input', updateCalculations);
     document.getElementById('coinAmount').addEventListener('input', updateCalculations);
     document.getElementById('feeRate').addEventListener('input', updateCalculations);
+    document.getElementById('lowerPrice').addEventListener('input', updateCalculations);
+    document.getElementById('upperPrice').addEventListener('input', updateCalculations);
     
     // 定时刷新价格
     setInterval(updateTicker, 10000);
     setInterval(updateBalance, 30000);
+    
+    // 定时刷新状态
+    statusTimer = setInterval(updateStatus, 5000);
 });
 
 // ========== WebSocket ==========
@@ -52,7 +58,6 @@ function connectWebSocket() {
         ws.onclose = () => {
             document.getElementById('connectionStatus').textContent = '已断开';
             document.getElementById('connectionStatus').className = 'status-badge disconnected';
-            // 自动重连
             if (reconnectTimer) clearTimeout(reconnectTimer);
             reconnectTimer = setTimeout(connectWebSocket, 3000);
         };
@@ -70,7 +75,6 @@ function connectWebSocket() {
             console.error('WebSocket 错误:', e);
         };
         
-        // 心跳
         setInterval(() => {
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send('ping');
@@ -102,6 +106,8 @@ function handleWsMessage(msg) {
             isRunning = false;
             document.getElementById('startBtn').disabled = false;
             document.getElementById('stopBtn').disabled = true;
+            document.getElementById('runningPanel').style.display = 'none';
+            document.getElementById('botConfigPanel').style.display = 'none';
             addLog('⏹ 网格策略已停止');
             break;
     }
@@ -179,16 +185,12 @@ async function updateTicker() {
         document.getElementById('symbolPrice').textContent = `$${data.price.toFixed(4)}`;
         document.getElementById('currentPrice').textContent = `$${data.price.toFixed(4)}`;
         
-        // 计算最优网格范围
         if (data.high_24h && data.low_24h && data.high_24h > 0 && data.low_24h > 0) {
             const volatility = ((data.high_24h - data.low_24h) / data.low_24h) * 100;
             document.getElementById('volatility').textContent = `${volatility.toFixed(2)}%`;
-            
-            // 最优范围 = 24h 高低点
             document.getElementById('optimalRange').textContent = 
                 `$${data.low_24h.toFixed(4)} ~ $${data.high_24h.toFixed(4)}`;
             
-            // 自动计算最优间隔
             const optimalSpacing = (volatility / 26).toFixed(2);
             const spacingInput = document.getElementById('priceSpacing');
             if (!spacingInput.dataset.userModified) {
@@ -207,19 +209,19 @@ async function updateBalance() {
     
     const baseAsset = symbol.split('/')[0];
     
-    // 获取 USDT 余额
     const usdtData = await apiGet(`/api/balance?exchange=${exchange}&asset=USDT`);
     if (usdtData) {
         currentBalance.usdt = usdtData.free || 0;
         document.getElementById('usdtBalance').textContent = `$${currentBalance.usdt.toFixed(2)}`;
+        document.getElementById('availableUsdt').textContent = `$${currentBalance.usdt.toFixed(2)}`;
     }
     
-    // 获取币余额
     const coinData = await apiGet(`/api/balance?exchange=${exchange}&asset=${baseAsset}`);
     if (coinData) {
         currentBalance.coin = coinData.free || 0;
         document.getElementById('coinBalance').textContent = `${currentBalance.coin.toFixed(4)} ${baseAsset}`;
         document.getElementById('symbolBalance').textContent = `${currentBalance.coin.toFixed(4)}`;
+        document.getElementById('availableCoin').textContent = `${currentBalance.coin.toFixed(4)} ${baseAsset}`;
     }
     
     updateCalculations();
@@ -235,24 +237,22 @@ function updateCalculations() {
     const usdtAmount = parseFloat(document.getElementById('usdtAmount').value) || 0;
     const coinAmount = parseFloat(document.getElementById('coinAmount').value) || 0;
     const feeRate = parseFloat(document.getElementById('feeRate').value) || 0.2;
+    const lowerPrice = parseFloat(document.getElementById('lowerPrice').value) || 0;
+    const upperPrice = parseFloat(document.getElementById('upperPrice').value) || 0;
     
-    // 计算每格金额
     const halfGrids = Math.floor(gridCount / 2);
-    const buyGrids = Math.max(1, halfGrids - 1);  // 保留 1 格缓冲
+    const buyGrids = Math.max(1, halfGrids - 1);
     const sellGrids = Math.max(1, halfGrids - 1);
     
     const perGridUsdt = usdtAmount > 0 ? usdtAmount / buyGrids : 0;
     const perGridQty = coinAmount > 0 ? coinAmount / sellGrids : (perGridUsdt > 0 ? perGridUsdt / price : 0);
     
-    // 最少需要
     const minUsdt = perGridUsdt * buyGrids;
     const minCoin = perGridQty * sellGrids;
     
-    // 显示每格金额
     document.getElementById('perGridAmount').textContent = 
         `$${perGridUsdt.toFixed(2)} / ${perGridQty.toFixed(6)} 币`;
     
-    // 显示最少需要
     const usdtHint = document.getElementById('usdtMinHint');
     if (minUsdt > 0) {
         if (usdtAmount >= minUsdt) {
@@ -275,27 +275,21 @@ function updateCalculations() {
         }
     }
     
-    // 需要购买币
     const needBuy = Math.max(0, minCoin - currentBalance.coin);
     const needBuyUsdt = needBuy * price;
     document.getElementById('needBuyCoin').textContent = 
         needBuy > 0 ? `需要 ${needBuy.toFixed(6)} 币 (≈ $${needBuyUsdt.toFixed(2)})` : '✅ 已足够';
     
-    // 预计单次利润
     const spacingPct = spacing / 100;
     const profitPct = spacingPct - (feeRate / 100) * 2;
     const profitPerTrade = profitPct * perGridUsdt;
     document.getElementById('estimatedProfit').value = 
         profitPct > 0 ? `${(profitPct * 100).toFixed(3)}% (≈ $${profitPerTrade.toFixed(4)})` : '亏损';
     
-    // 网格间距
     const gridSpacing = price * spacingPct;
     document.getElementById('gridSpacing').textContent = `$${gridSpacing.toFixed(4)}`;
-    
-    // 更新价格间隔提示
     document.getElementById('priceSpacingHint').textContent = `≈ $${gridSpacing.toFixed(4)}`;
     
-    // 检查启动按钮
     const startBtn = document.getElementById('startBtn');
     if (usdtAmount > 0 && usdtAmount < minUsdt) {
         startBtn.disabled = true;
@@ -341,7 +335,6 @@ async function testConnection(exchange) {
     
     if (result.connected) {
         addLog(`✅ ${exchange} 连接成功, USDT 余额: $${result.usdt_balance}`);
-        // 刷新余额
         updateBalance();
     }
 }
@@ -355,6 +348,8 @@ async function startGrid() {
     const coinAmount = parseFloat(document.getElementById('coinAmount').value) || 0;
     const stopLossPrice = parseFloat(document.getElementById('stopLossPrice').value) || null;
     const feeRate = parseFloat(document.getElementById('feeRate').value) || 0.2;
+    const lowerPrice = parseFloat(document.getElementById('lowerPrice').value) || null;
+    const upperPrice = parseFloat(document.getElementById('upperPrice').value) || null;
     
     if (!symbol) {
         addLog('❌ 请选择币种');
@@ -376,14 +371,25 @@ async function startGrid() {
         usdt_amount: usdtAmount,
         coin_amount: coinAmount > 0 ? coinAmount : null,
         stop_loss_price: stopLossPrice,
-        fee_rate: feeRate / 100
+        fee_rate: feeRate / 100,
+        total_investment: usdtAmount,
+        lower_price: lowerPrice,
+        upper_price: upperPrice
     });
     
     if (result.success) {
         isRunning = true;
         document.getElementById('startBtn').disabled = true;
         document.getElementById('stopBtn').disabled = false;
+        document.getElementById('runningPanel').style.display = 'block';
+        document.getElementById('botConfigPanel').style.display = 'block';
+        
+        // 更新运行面板
+        document.getElementById('runningSymbol').textContent = `${symbol} 现货网格`;
+        document.getElementById('runningExchange').textContent = `${symbol} @ ${exchange}`;
+        
         addLog(`✅ ${result.message}`);
+        updateStatus();
     } else {
         addLog(`❌ ${result.detail || result.message || '启动失败'}`);
     }
@@ -398,6 +404,8 @@ async function stopGrid() {
         isRunning = false;
         document.getElementById('startBtn').disabled = false;
         document.getElementById('stopBtn').disabled = true;
+        document.getElementById('runningPanel').style.display = 'none';
+        document.getElementById('botConfigPanel').style.display = 'none';
         addLog(`✅ ${result.message}`);
     } else {
         addLog(`❌ ${result.detail || result.message || '停止失败'}`);
@@ -408,6 +416,10 @@ async function updateStatus() {
     const data = await apiGet('/api/status');
     if (data) {
         updateUI(data);
+        if (data.is_running) {
+            updateRunningPanel(data);
+            updateBotConfigPanel(data);
+        }
     }
 }
 
@@ -424,7 +436,6 @@ function updateUI(data) {
         }
     }
     
-    // 更新订单表
     if (data.buy_orders) {
         updateOrdersTable('buyOrdersBody', data.buy_orders, 'buy');
     }
@@ -432,12 +443,223 @@ function updateUI(data) {
         updateOrdersTable('sellOrdersBody', data.sell_orders, 'sell');
     }
     
-    // 更新成交记录
     if (data.trades) {
         updateTradesTable(data.trades);
     }
 }
 
+// ========== 运行详情面板 ==========
+function updateRunningPanel(data) {
+    if (!data || !data.is_running) {
+        document.getElementById('runningPanel').style.display = 'none';
+        return;
+    }
+    
+    document.getElementById('runningPanel').style.display = 'block';
+    
+    // 基本信息
+    const symbol = data.strategy?.symbol || '--';
+    document.getElementById('runningSymbol').textContent = `${symbol} 现货网格`;
+    document.getElementById('runningExchange').textContent = `${symbol} @ ${data.strategy?.exchange || '--'}`;
+    document.getElementById('runningCreatedAt').textContent = data.created_at || '--';
+    document.getElementById('runningTime').textContent = data.running_time || '--';
+    
+    // 价格区间
+    const gridRange = data.strategy?.grid_range;
+    if (gridRange && gridRange[0] > 0) {
+        document.getElementById('runningPriceRange').textContent = 
+            `${gridRange[0].toFixed(4)} - ${gridRange[1].toFixed(4)} USDT`;
+    } else {
+        document.getElementById('runningPriceRange').textContent = '--';
+    }
+    
+    // 统计数据
+    document.getElementById('runningTotalProfit').textContent = 
+        data.total_profit >= 0 ? `+${data.total_profit}` : data.total_profit;
+    document.getElementById('runningTotalProfit').className = 
+        `running-stat-value ${data.total_profit >= 0 ? 'profit' : 'loss'}`;
+    
+    document.getElementById('runningGridProfit').textContent = 
+        data.grid_profit >= 0 ? `+${data.grid_profit}` : data.grid_profit;
+    document.getElementById('runningGridProfit').className = 
+        `running-stat-value ${data.grid_profit >= 0 ? 'profit' : 'loss'}`;
+    
+    const floatingPnl = data.floating_pnl || 0;
+    document.getElementById('runningFloatingPnl').textContent = 
+        floatingPnl >= 0 ? `+${floatingPnl}` : floatingPnl;
+    document.getElementById('runningFloatingPnl').className = 
+        `running-stat-value ${floatingPnl >= 0 ? 'profit' : 'loss'}`;
+    
+    document.getElementById('runningAnnualized').textContent = 
+        data.annualized_return ? `${data.annualized_return.toFixed(2)}%` : '0%';
+    document.getElementById('runningAnnualized').className = 
+        `running-stat-value ${data.annualized_return > 0 ? 'profit' : ''}`;
+    
+    document.getElementById('runningInvestment').textContent = 
+        data.config?.total_investment ? `$${data.config.total_investment.toFixed(2)}` : '--';
+    document.getElementById('runningTradeCount').textContent = 
+        data.trade_stats?.total_trades || 0;
+    
+    // 网格收益轮次
+    updateGridTradesTable(data.grid_trades);
+    
+    // 交易历史
+    if (data.trades) {
+        updateTradesTable(data.trades);
+        updateHistoryTradesTable(data.trades);
+    }
+}
+
+function updateGridTradesTable(gridTrades) {
+    const tbody = document.getElementById('gridTradesBody');
+    if (!gridTrades || gridTrades.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty">暂无交易记录</td></tr>';
+        return;
+    }
+    
+    tbody.innerHTML = gridTrades.map(t => {
+        const profit = t.profit || 0;
+        const profitClass = profit > 0 ? 'profit' : (profit < 0 ? 'loss' : '');
+        const profitText = profit > 0 ? `+${profit.toFixed(8)}` : (profit < 0 ? profit.toFixed(8) : '等待卖出');
+        const dateStr = t.created_at ? formatDate(t.created_at) : '--';
+        const sideText = t.side === 'buy' ? '买入' : (t.side === 'sell' ? '卖出' : '--');
+        
+        return `<tr>
+            <td>${t.round_num || '--'}</td>
+            <td class="${profitClass}">${profitText}</td>
+            <td>${dateStr}</td>
+            <td><span class="side-${t.side}">${sideText}</span></td>
+        </tr>`;
+    }).join('');
+}
+
+function updateHistoryTradesTable(trades) {
+    const tbody = document.getElementById('historyTradesBody');
+    if (!trades || trades.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无成交记录</td></tr>';
+        return;
+    }
+    
+    tbody.innerHTML = trades.map(t => `
+        <tr>
+            <td>${t.created_at || '--'}</td>
+            <td><span class="side-${t.side}">${t.side === 'buy' ? '买入' : '卖出'}</span></td>
+            <td>$${t.price.toFixed(4)}</td>
+            <td>${t.quantity.toFixed(6)}</td>
+            <td>$${(t.price * t.quantity).toFixed(2)}</td>
+            <td>$${(t.fee || 0).toFixed(4)}</td>
+            <td class="${t.profit > 0 ? 'profit' : t.profit < 0 ? 'loss' : ''}">${t.profit ? `$${t.profit.toFixed(4)}` : '--'}</td>
+        </tr>
+    `).join('');
+}
+
+// ========== 机器人参数面板 ==========
+function updateBotConfigPanel(data) {
+    if (!data || !data.config) return;
+    
+    const config = data.config;
+    const strategy = data.strategy || {};
+    
+    document.getElementById('botPriceRange').textContent = 
+        config.lower_price && config.upper_price 
+            ? `${config.lower_price} - ${config.upper_price} USDT`
+            : (strategy.grid_range ? `${strategy.grid_range[0].toFixed(4)} - ${strategy.grid_range[1].toFixed(4)}` : '--');
+    
+    document.getElementById('botGridCount').textContent = 
+        `${config.grid_count || '--'} / 等差`;
+    
+    document.getElementById('botPerGrid').textContent = 
+        config.total_investment && config.grid_count 
+            ? (config.total_investment / config.grid_count).toFixed(2)
+            : '--';
+    
+    document.getElementById('botProfitRate').textContent = 
+        config.price_spacing 
+            ? `${(config.price_spacing * 0.8).toFixed(2)}%-${(config.price_spacing * 1.2).toFixed(2)}%`
+            : '--';
+    
+    document.getElementById('botId').textContent = config.id || '--';
+    document.getElementById('botStartCondition').textContent = '触发价格 0 USDT';
+    document.getElementById('botStopCondition').textContent = '触发价格 0 USDT';
+    document.getElementById('botStopPrices').textContent = 
+        `${config.stop_loss_price || 0} / ${config.stop_loss_price || 0}`;
+    document.getElementById('botQtyIncrease').textContent = `按数量 --`;
+    document.getElementById('botMoveRange').textContent = '1%';
+    document.getElementById('botStopMovePrices').textContent = '-- / --';
+    document.getElementById('botSellOnStop').textContent = '否';
+    document.getElementById('botShareRatio').textContent = '0%';
+    document.getElementById('botName').textContent = `${config.symbol || '--'} 现货网格`;
+}
+
+// ========== 操作按钮 ==========
+function shareBot() {
+    const symbol = document.getElementById('runningSymbol').textContent;
+    const text = `🤖 ${symbol}\n总收益: ${document.getElementById('runningTotalProfit').textContent} USDT\n网格收益: ${document.getElementById('runningGridProfit').textContent} USDT`;
+    
+    if (navigator.clipboard) {
+        navigator.clipboard.writeText(text).then(() => {
+            addLog('📤 已复制分享文本到剪贴板');
+        });
+    } else {
+        addLog('📤 分享功能需要 HTTPS');
+    }
+}
+
+async function terminateBot() {
+    if (confirm('确定要终止机器人吗？')) {
+        await stopGrid();
+    }
+}
+
+function copyBot() {
+    const symbol = document.getElementById('runningSymbol').textContent;
+    const text = `🤖 ${symbol}\n配置已复制`;
+    
+    if (navigator.clipboard) {
+        navigator.clipboard.writeText(text).then(() => {
+            addLog('📋 已复制机器人信息到剪贴板');
+        });
+    }
+}
+
+// ========== 面板切换 ==========
+function toggleGridTrades() {
+    const panel = document.getElementById('gridTradesPanel');
+    const icon = document.getElementById('gridTradesToggle');
+    if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+        icon.textContent = '▼';
+    } else {
+        panel.style.display = 'none';
+        icon.textContent = '▶';
+    }
+}
+
+function toggleTradeHistory() {
+    const panel = document.getElementById('tradeHistoryPanel');
+    const icon = document.getElementById('tradeHistoryToggle');
+    if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+        icon.textContent = '▼';
+    } else {
+        panel.style.display = 'none';
+        icon.textContent = '▶';
+    }
+}
+
+function toggleBotConfig() {
+    const body = document.getElementById('botConfigBody');
+    const icon = document.getElementById('botConfigToggle');
+    if (body.style.display === 'none') {
+        body.style.display = 'block';
+        icon.textContent = '▼';
+    } else {
+        body.style.display = 'none';
+        icon.textContent = '▶';
+    }
+}
+
+// ========== 表格更新 ==========
 function updateOrdersTable(bodyId, orders, side) {
     const tbody = document.getElementById(bodyId);
     if (!orders || orders.length === 0) {
@@ -475,6 +697,20 @@ function updateTradesTable(trades) {
     `).join('');
 }
 
+// ========== 辅助函数 ==========
+function formatDate(dateStr) {
+    try {
+        const d = new Date(dateStr);
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const hours = String(d.getHours()).padStart(2, '0');
+        const minutes = String(d.getMinutes()).padStart(2, '0');
+        return `${month}-${day} ${hours}:${minutes}`;
+    } catch {
+        return dateStr;
+    }
+}
+
 // ========== 日志 ==========
 function addLog(message) {
     const container = document.getElementById('logContainer');
@@ -485,7 +721,6 @@ function addLog(message) {
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
     
-    // 限制日志数量
     while (container.children.length > 200) {
         container.removeChild(container.firstChild);
     }

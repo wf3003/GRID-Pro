@@ -180,6 +180,47 @@ class Database:
         finally:
             conn.close()
     
+    def get_grid_config_by_id(self, config_id: int) -> Optional[Dict[str, Any]]:
+        """根据ID获取网格配置"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM grid_configs WHERE id = ?", (config_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+    
+    def get_grid_trades(self, grid_config_id: int, limit: int = 100) -> List[Dict[str, Any]]:
+        """获取网格轮次交易（按利润排序的成交记录）"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    ROW_NUMBER() OVER (ORDER BY created_at DESC) as round_num,
+                    profit,
+                    created_at,
+                    side,
+                    price,
+                    quantity,
+                    amount
+                FROM trades 
+                WHERE grid_config_id = ? AND profit != 0
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (grid_config_id, limit))
+            rows = cursor.fetchall()
+            result = []
+            for row in rows:
+                d = dict(row)
+                d['round_num'] = f"#{d['round_num']}"
+                result.append(d)
+            return result
+        finally:
+            conn.close()
+
+    
     # ========== 挂单记录 ==========
     
     def save_order(self, grid_config_id: int, exchange_order_id: str,

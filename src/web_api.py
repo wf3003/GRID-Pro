@@ -108,12 +108,65 @@ class GridBotAPI:
                 buy_orders = self.db.get_buy_orders(self.strategy.db_config_id)
                 sell_orders = self.db.get_sell_orders(self.strategy.db_config_id)
                 balance = self.db.get_latest_balance(self.strategy.db_config_id)
+                config = self.db.get_grid_config_by_id(self.strategy.db_config_id)
+                grid_trades = self.db.get_grid_trades(self.strategy.db_config_id, limit=50)
             else:
                 trade_stats = {}
                 trades = []
                 buy_orders = []
                 sell_orders = []
                 balance = None
+                config = None
+                grid_trades = []
+            
+            # 计算运行时长
+            running_time = ""
+            created_at = None
+            if config and config.get('created_at'):
+                created_at = config['created_at']
+                try:
+                    from datetime import datetime
+                    start = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+                    now = datetime.now()
+                    delta = now - start
+                    days = delta.days
+                    hours = delta.seconds // 3600
+                    if days > 0:
+                        running_time = f"{days}天{hours}小时"
+                    else:
+                        running_time = f"{hours}小时"
+                except:
+                    running_time = "--"
+            
+            # 计算总收益（网格收益 + 浮动盈亏）
+            total_profit = 0
+            grid_profit = 0
+            floating_pnl = 0
+            if trade_stats:
+                grid_profit = trade_stats.get('total_profit', 0)
+            
+            # 计算浮动盈亏
+            if balance and stats.get('current_price'):
+                current_price = stats['current_price']
+                coin_value = (balance.get('coin_balance', 0) or 0) * current_price
+                total_value = (balance.get('usdt_balance', 0) or 0) + coin_value
+                initial_investment = config.get('total_investment', 0) if config else 0
+                if initial_investment and initial_investment > 0:
+                    floating_pnl = total_value - initial_investment
+                    total_profit = grid_profit + floating_pnl
+            
+            # 计算年化收益率
+            annualized_return = 0
+            if config and config.get('created_at') and total_profit != 0:
+                try:
+                    from datetime import datetime
+                    start = datetime.strptime(config['created_at'], '%Y-%m-%d %H:%M:%S')
+                    now = datetime.now()
+                    hours_running = (now - start).total_seconds() / 3600
+                    if hours_running > 0 and config.get('total_investment', 0) > 0:
+                        annualized_return = (total_profit / config['total_investment']) / (hours_running / (365 * 24)) * 100
+                except:
+                    pass
             
             return {
                 "is_running": self._running,
@@ -122,8 +175,17 @@ class GridBotAPI:
                 "trades": trades,
                 "buy_orders": buy_orders,
                 "sell_orders": sell_orders,
-                "balance": balance
+                "balance": balance,
+                "config": config,
+                "grid_trades": grid_trades,
+                "total_profit": round(total_profit, 2),
+                "grid_profit": round(grid_profit, 2),
+                "floating_pnl": round(floating_pnl, 2),
+                "annualized_return": round(annualized_return, 2),
+                "running_time": running_time,
+                "created_at": created_at
             }
+
         
         @app.post("/api/start")
         async def start_grid(req: StartGridRequest):
