@@ -36,8 +36,8 @@ class GridConfig(BaseModel):
     
     # 自动调整参数
     auto_adjust_enabled: bool = True  # 是否启用自动调整
-    adjust_interval: int = 300  # 调整间隔（秒），默认5分钟
-    price_deviation_threshold: Decimal = Field(default=Decimal("0.02"), description="价格偏离阈值，如0.02表示2%")
+    adjust_interval: int = 60  # 调整间隔（秒），默认1分钟
+    price_deviation_threshold: Decimal = Field(default=Decimal("0.01"), description="价格偏离阈值，如0.01表示1%")
     
     # 风控参数
     max_open_orders: int = Field(default=10, description="最大同时挂单数")

@@ -208,35 +208,7 @@
                 <span id="adviceToggleIcon" class="toggle-icon">▶</span>
             </div>
             <div id="advicePanel" class="panel-body" style="display:none;">
-                <div class="advice-loading" id="adviceLoading">加载中...</div>
-                <div id="adviceContent" style="display:none;">
-                    <div class="advice-score" id="adviceScore">
-                        <div class="advice-score-circle" id="adviceScoreCircle">
-                            <span id="adviceScoreValue">--</span>
-                        </div>
-                        <div class="advice-score-label">网格适合度评分</div>
-                    </div>
-                    <div class="advice-summary" id="adviceSummary"></div>
-                    <div class="advice-detail" id="adviceDetail"></div>
-                    <div class="advice-section">
-                        <h4>📋 操作建议</h4>
-                        <ul id="adviceSuggestions"></ul>
-                    </div>
-                    <div class="advice-section">
-                        <h4>⚠️ 风险提示</h4>
-                        <ul id="adviceWarnings"></ul>
-                    </div>
-                    <div class="advice-section">
-                        <h4>📊 分析依据</h4>
-                        <ul id="adviceReasons"></ul>
-                    </div>
-                    <div class="advice-price-info">
-                        <span>当前价格: <strong id="adviceCurrentPrice">--</strong></span>
-                        <span>近期低点: <strong id="adviceRecentLow">--</strong></span>
-                        <span>近期高点: <strong id="adviceRecentHigh">--</strong></span>
-                    </div>
-                </div>
-                <div class="advice-error" id="adviceError" style="display:none;"></div>
+                <div id="adviceContent"></div>
             </div>
         </section>
 
@@ -247,21 +219,7 @@
                 <span id="analysisToggleIcon" class="toggle-icon">▶</span>
             </div>
             <div id="analysisPanel" class="panel-body" style="display:none;">
-                <div class="analysis-loading" id="analysisLoading">加载中...</div>
-                <div id="analysisContent" style="display:none;">
-                    <div class="analysis-tabs" id="analysisTabs">
-                        <button class="analysis-tab active" data-interval="15m" onclick="switchAnalysisTab('15m')">15分钟</button>
-                        <button class="analysis-tab" data-interval="30m" onclick="switchAnalysisTab('30m')">30分钟</button>
-                        <button class="analysis-tab" data-interval="1h" onclick="switchAnalysisTab('1h')">1小时</button>
-                        <button class="analysis-tab" data-interval="4h" onclick="switchAnalysisTab('4h')">4小时</button>
-                        <button class="analysis-tab" data-interval="1d" onclick="switchAnalysisTab('1d')">日线</button>
-                        <button class="analysis-tab" data-interval="1w" onclick="switchAnalysisTab('1w')">周线</button>
-                    </div>
-                    <div id="analysisIntervalContent">
-                        <!-- 由 JS 动态渲染 -->
-                    </div>
-                </div>
-                <div class="analysis-error" id="analysisError" style="display:none;"></div>
+                <div id="analysisContent"></div>
             </div>
         </section>
 
@@ -344,13 +302,6 @@
                 </div>
             </div>
 
-            <!-- 操作按钮 -->
-            <div class="running-actions">
-                <button class="btn btn-action" onclick="shareBot()">📤 分享</button>
-                <button class="btn btn-action btn-danger" onclick="terminateBot()">⛔ 终止</button>
-                <button id="runningStartBtn" class="btn btn-start" onclick="startGrid()">🚀 启动</button>
-                <button class="btn btn-action" onclick="copyBot()">📋 复制</button>
-            </div>
 
             <!-- 交易历史 -->
             <div class="running-section">

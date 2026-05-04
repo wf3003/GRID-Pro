@@ -29,12 +29,35 @@ from src.analysis.market_analyzer import MarketAnalyzer
 
 
 # ========== JWT 配置 ==========
-# 如果环境变量没设置，自动生成一个随机密钥
+# 先加载 .env 文件，确保 JWT_SECRET 被读取
+def _load_env_file():
+    """加载 .env 文件到环境变量"""
+    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    os.environ.setdefault(key.strip(), value.strip())
+
+_load_env_file()
+
+# 如果环境变量没设置，自动生成一个随机密钥并持久化到 .env
 _DEFAULT_SECRET = os.getenv("JWT_SECRET")
 if not _DEFAULT_SECRET:
     import secrets
     _DEFAULT_SECRET = secrets.token_hex(32)
     os.environ["JWT_SECRET"] = _DEFAULT_SECRET
+    # 持久化到 .env 文件，确保重启后密钥不变
+    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+    try:
+        with open(env_path, "a") as f:
+            f.write(f"\n# JWT 密钥（自动生成，请勿修改）\nJWT_SECRET={_DEFAULT_SECRET}\n")
+    except Exception:
+        pass
 SECRET_KEY = _DEFAULT_SECRET
 
 ALGORITHM = "HS256"
@@ -73,21 +96,35 @@ def _decrypt_secret(encrypted: str) -> str:
         return ""
 
 
-# ========== 加载 .env 文件 ==========
-def _load_env_file():
-    """加载 .env 文件到环境变量"""
+def _get_api_keys(exchange: str) -> tuple:
+    """从环境变量获取 API Key（自动解密 Secret）"""
+    prefix = exchange.upper()
+    api_key = os.getenv(f"{prefix}_API_KEY", "")
+    encrypted_secret = os.getenv(f"{prefix}_API_SECRET", "")
+    # 尝试解密，如果解密失败则返回原始值（兼容旧数据）
+    api_secret = _decrypt_secret(encrypted_secret)
+    if not api_secret:
+        api_secret = encrypted_secret
+    return (api_key, api_secret)
+
+
+def _save_env_file(key: str, value: str):
+    """保存单个环境变量到 .env 文件"""
     env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+    lines = []
+    updated = False
     if os.path.exists(env_path):
         with open(env_path, "r") as f:
             for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" in line:
-                    key, value = line.split("=", 1)
-                    os.environ.setdefault(key.strip(), value.strip())
-
-_load_env_file()
+                if line.startswith(f"{key}="):
+                    lines.append(f"{key}={value}\n")
+                    updated = True
+                else:
+                    lines.append(line)
+    if not updated:
+        lines.append(f"{key}={value}\n")
+    with open(env_path, "w") as f:
+        f.writelines(lines)
 
 
 # ========== 请求/响应模型 ==========
@@ -267,22 +304,26 @@ class GridBotAPI:
                 config = None
                 grid_trades = []
             
-            # 计算运行时长
+            # 计算运行时长（created_at 是 UTC 时间，now 用 UTC 计算）
             running_time = ""
             created_at = None
             if config and config.get('created_at'):
                 created_at = config['created_at']
                 try:
-                    from datetime import datetime
-                    start = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
-                    now = datetime.now()
+                    from datetime import datetime, timezone
+                    # SQLite CURRENT_TIMESTAMP 是 UTC 时间
+                    start = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+                    now = datetime.now(timezone.utc)
                     delta = now - start
                     days = delta.days
                     hours = delta.seconds // 3600
+                    minutes = (delta.seconds % 3600) // 60
                     if days > 0:
-                        running_time = f"{days}天{hours}小时"
+                        running_time = f"{days}天{hours}小时{minutes}分钟"
+                    elif hours > 0:
+                        running_time = f"{hours}小时{minutes}分钟"
                     else:
-                        running_time = f"{hours}小时"
+                        running_time = f"{minutes}分钟"
                 except:
                     running_time = "--"
             
@@ -342,11 +383,16 @@ class GridBotAPI:
                 raise HTTPException(400, "网格策略已在运行中")
             
             try:
+                # 从环境变量获取 API Key
+                api_key, api_secret = _get_api_keys(req.exchange)
+                if not api_key or not api_secret:
+                    raise HTTPException(400, f"{req.exchange} 的 API Key 未配置，请先在 API Key 设置中配置")
+                
                 # 创建交易所配置
                 exchange_config = ExchangeConfig(
                     name=req.exchange,
-                    api_key="",  # 从环境变量读取
-                    api_secret=""
+                    api_key=api_key,
+                    api_secret=api_secret
                 )
                 
                 # 创建交易所实例
@@ -508,34 +554,37 @@ class GridBotAPI:
                 logger.error(f"获取交易建议失败: {e}")
                 return {"score": 0, "summary": f"获取建议失败: {str(e)}", "suggestions": [], "risk_warnings": []}
         
-        def _get_api_keys(exchange: str) -> tuple:
-            """从环境变量获取 API Key（自动解密 Secret）"""
-            prefix = exchange.upper()
-            api_key = os.getenv(f"{prefix}_API_KEY", "")
-            encrypted_secret = os.getenv(f"{prefix}_API_SECRET", "")
-            # 尝试解密，如果解密失败则返回原始值（兼容旧数据）
-            api_secret = _decrypt_secret(encrypted_secret)
-            if not api_secret:
-                api_secret = encrypted_secret
-            return (api_key, api_secret)
-        
-        def _save_env_file(key: str, value: str):
-            """保存单个环境变量到 .env 文件"""
-            env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
-            lines = []
-            updated = False
-            if os.path.exists(env_path):
-                with open(env_path, "r") as f:
-                    for line in f:
-                        if line.startswith(f"{key}="):
-                            lines.append(f"{key}={value}\n")
-                            updated = True
-                        else:
-                            lines.append(line)
-            if not updated:
-                lines.append(f"{key}={value}\n")
-            with open(env_path, "w") as f:
-                f.writelines(lines)
+        @app.get("/api/klines")
+        async def get_klines(exchange: str = "binance", symbol: str = "BTC/USDT", interval: str = "1h", limit: int = 200):
+            """获取 K 线数据"""
+            try:
+                exchange_config = ExchangeConfig(
+                    name=exchange,
+                    api_key="",
+                    api_secret=""
+                )
+                ex = ExchangeFactory.create_exchange(exchange_config)
+                klines = await ex.get_klines(symbol, interval=interval, limit=limit)
+                await ex.close()
+                # 将 Decimal 转换为 float 以便 JSON 序列化
+                result = []
+                for k in klines:
+                    result.append({
+                        "open_time": k.open_time.isoformat(),
+                        "close_time": k.close_time.isoformat(),
+                        "open": float(k.open),
+                        "high": float(k.high),
+                        "low": float(k.low),
+                        "close": float(k.close),
+                        "volume": float(k.volume),
+                        "quote_volume": float(k.quote_volume),
+                        "taker_buy_volume": float(k.taker_buy_volume),
+                        "taker_buy_quote_volume": float(k.taker_buy_quote_volume)
+                    })
+                return {"symbol": symbol, "interval": interval, "klines": result}
+            except Exception as e:
+                logger.error(f"获取 K 线数据失败: {e}")
+                return {"symbol": symbol, "interval": interval, "error": str(e), "klines": []}
         
         @app.post("/api/keys")
         async def save_api_keys(config: ApiKeyConfig, username: str = Depends(get_current_user)):

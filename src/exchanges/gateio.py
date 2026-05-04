@@ -9,6 +9,7 @@ from typing import Optional, List, Tuple
 from urllib.parse import urlencode
 
 import aiohttp
+from loguru import logger
 
 from src.exchanges.base import ExchangeBase
 from src.models.trading import Order, OrderSide, OrderStatus, OrderType, Ticker, Balance, Kline
@@ -74,10 +75,10 @@ class GateIOExchange(ExchangeBase):
         body = ""
         
         if signed:
-            if method == "GET" and params:
+            if method in ["GET", "DELETE"] and params:
                 query_string = urlencode(params)
                 url = f"{url}?{query_string}"
-            elif method in ["POST", "DELETE"] and params:
+            elif method == "POST" and params:
                 import json
                 body = json.dumps(params)
                 headers['Content-Type'] = 'application/json'
@@ -184,13 +185,14 @@ class GateIOExchange(ExchangeBase):
         """取消订单"""
         try:
             gate_symbol = symbol.replace("/", "_")
+            # Gate.io 取消订单 API: DELETE /api/v4/spot/orders/{order_id}?currency_pair={pair}
             params = {
                 'currency_pair': gate_symbol,
-                'order_id': order_id
             }
             await self._request("DELETE", f"/api/v4/spot/orders/{order_id}", signed=True, params=params)
             return True
-        except Exception:
+        except Exception as e:
+            logger.error(f"取消订单失败: {e}")
             return False
     
     async def get_order(self, symbol: str, order_id: str) -> Optional[Order]:

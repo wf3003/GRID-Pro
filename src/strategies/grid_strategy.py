@@ -73,24 +73,37 @@ class GridStrategy:
         return current_price * Decimal("0.005")
     
     def _calculate_per_grid_amount(self) -> Decimal:
-        """计算每格交易金额（USDT）"""
+        """计算每格交易金额（USDT）
+        
+        注意：此金额是买单和卖单共用的每格 USDT 价值。
+        买单每格用 USDT 买入，卖单每格用币卖出。
+        所以 per_grid_qty = per_grid_usdt / price，保证买卖对称。
+        """
         grid_count = self.config.grid_count
         if grid_count <= 0:
             grid_count = 26
         
-        # 买单格数 = 总格数 / 2（保留 1 格缓冲）
-        buy_grids = max(1, grid_count // 2 - 1)
+        # 总格数 = 买单格数 + 卖单格数（各保留 1 格缓冲）
+        half_grids = grid_count // 2
+        buy_grids = max(1, half_grids - 1)
+        sell_grids = max(1, half_grids - 1)
+        total_grids = buy_grids + sell_grids
         
         if self.config.usdt_amount:
-            return self.config.usdt_amount / Decimal(str(buy_grids))
+            # USDT 分配到所有格子（买单用 USDT，卖单用币）
+            return self.config.usdt_amount / Decimal(str(total_grids))
         
         if self.config.total_investment:
-            return self.config.total_investment / Decimal(str(buy_grids))
+            return self.config.total_investment / Decimal(str(total_grids))
         
         return Decimal("10")  # 默认每格 $10
     
     def _calculate_per_grid_quantity(self, price: Decimal) -> Decimal:
-        """计算每格交易币数量"""
+        """计算每格交易币数量
+        
+        保证：per_grid_qty * price = per_grid_usdt
+        即买卖对称：买单每格花 per_grid_usdt USDT，卖单每格卖 per_grid_qty 币
+        """
         if self.config.coin_amount:
             sell_grids = max(1, self.config.grid_count // 2 - 1)
             return self.config.coin_amount / Decimal(str(sell_grids))
@@ -281,12 +294,16 @@ class GridStrategy:
         self._running = False
         self.status.is_running = False
         
-        # 取消所有任务
+        # 先取消所有挂单（在取消任务之前执行，确保 API 调用正常）
+        await self._cancel_all_orders()
+        
+        # 再取消所有任务
         for task in self._tasks:
             task.cancel()
         
-        # 取消所有挂单
-        await self._cancel_all_orders()
+        # 等待任务真正结束
+        if self._tasks:
+            await asyncio.sleep(0.5)
         
         logger.info(f"网格策略已停止: {self.config.symbol}")
     
@@ -309,6 +326,7 @@ class GridStrategy:
         核心逻辑：
         - 买单成交 → 在成交价上方一个间隔补一个卖单
         - 卖单成交 → 在成交价下方一个间隔补一个买单
+        - 每3秒扫描一次，确保网格始终完整
         """
         # 获取当前行情
         ticker = await self.exchange.get_ticker(self.config.symbol)
@@ -323,7 +341,7 @@ class GridStrategy:
         
         # 获取当前挂单
         open_orders = await self.exchange.get_open_orders(self.config.symbol)
-        open_order_ids = {o.id for o in open_orders}
+        open_order_ids = {o.id for o in open_orders if o.id}
         
         # 检查每个网格层的订单状态
         for level in self.grid_levels:
@@ -331,40 +349,90 @@ class GridStrategy:
                 continue
             
             # 检查买单是否成交
-            if level.buy_order and level.buy_order.id not in open_order_ids:
-                filled_order = await self.exchange.get_order(
-                    self.config.symbol, level.buy_order.id
-                )
-                if filled_order and filled_order.status == OrderStatus.FILLED:
-                    await self._on_order_filled(filled_order)
-                    level.buy_order = None
-                    # 买单成交 → 在成交价上方一个间隔补一个卖单
-                    sell_price = level.buy_price + self._grid_spacing
-                    level.sell_price = self._round_price(sell_price)
-                    await self._place_sell_order(level)
+            if level.buy_order and level.buy_order.id:
+                if level.buy_order.id not in open_order_ids:
+                    # 订单不在挂单列表中，说明已被吃掉或取消
+                    # 尝试查询订单状态，如果查询失败（如 Gate.io 返回 404）也视为已成交
+                    is_filled = False
+                    try:
+                        filled_order = await self.exchange.get_order(
+                            self.config.symbol, level.buy_order.id
+                        )
+                        if filled_order and filled_order.status == OrderStatus.FILLED:
+                            is_filled = True
+                        elif filled_order is None:
+                            # Gate.io 查询已成交订单可能返回 None（404），视为已成交
+                            is_filled = True
+                            logger.info(f"买单 {level.buy_order.id} 不在挂单列表且查询不到，视为已成交")
+                    except Exception as e:
+                        logger.error(f"检查买单 {level.buy_order.id} 状态失败: {e}")
+                        # 查询失败也视为已成交，避免卡住
+                        is_filled = True
+                    
+                    if is_filled:
+                        level.buy_order = None
+                        # 买单成交 → 在成交价上方一个间隔补一个卖单
+                        sell_price = level.buy_price + self._grid_spacing
+                        level.sell_price = self._round_price(sell_price)
+                        await self._place_sell_order(level)
+                        logger.info(f"买单已处理，补卖单: {level.sell_price} x {level.quantity}")
             
             # 检查卖单是否成交
-            if level.sell_order and level.sell_order.id not in open_order_ids:
-                filled_order = await self.exchange.get_order(
-                    self.config.symbol, level.sell_order.id
-                )
-                if filled_order and filled_order.status == OrderStatus.FILLED:
-                    await self._on_order_filled(filled_order)
-                    level.sell_order = None
-                    # 卖单成交 → 在成交价下方一个间隔补一个买单
-                    buy_price = level.sell_price - self._grid_spacing
-                    level.buy_price = self._round_price(buy_price)
+            if level.sell_order and level.sell_order.id:
+                if level.sell_order.id not in open_order_ids:
+                    # 订单不在挂单列表中，说明已被吃掉或取消
+                    is_filled = False
+                    try:
+                        filled_order = await self.exchange.get_order(
+                            self.config.symbol, level.sell_order.id
+                        )
+                        if filled_order and filled_order.status == OrderStatus.FILLED:
+                            is_filled = True
+                        elif filled_order is None:
+                            # Gate.io 查询已成交订单可能返回 None（404），视为已成交
+                            is_filled = True
+                            logger.info(f"卖单 {level.sell_order.id} 不在挂单列表且查询不到，视为已成交")
+                    except Exception as e:
+                        logger.error(f"检查卖单 {level.sell_order.id} 状态失败: {e}")
+                        # 查询失败也视为已成交，避免卡住
+                        is_filled = True
+                    
+                    if is_filled:
+                        level.sell_order = None
+                        # 卖单成交 → 在成交价下方一个间隔补一个买单
+                        buy_price = level.sell_price - self._grid_spacing
+                        level.buy_price = self._round_price(buy_price)
+                        await self._place_buy_order(level)
+                        logger.info(f"卖单已处理，补买单: {level.buy_price} x {level.quantity}")
+        
+        # 检查是否有网格层缺少订单（比如补单失败的情况）
+        # 如果某个活跃层既没有买单也没有卖单，尝试重新挂单
+        for level in self.grid_levels:
+            if not level.is_active:
+                continue
+            if not level.buy_order and not level.sell_order:
+                # 这个层没有订单了，根据价格位置决定挂买单还是卖单
+                if level.buy_price > 0 and level.sell_price > 0:
+                    # 两个价格都有，看哪个更接近当前价格
+                    if abs(level.buy_price - current_price) < abs(level.sell_price - current_price):
+                        await self._place_buy_order(level)
+                    else:
+                        await self._place_sell_order(level)
+                elif level.buy_price > 0:
                     await self._place_buy_order(level)
+                elif level.sell_price > 0:
+                    await self._place_sell_order(level)
         
         # 更新活跃订单统计
-        self.status.active_buy_orders = sum(
-            1 for l in self.grid_levels 
-            if l.buy_order and l.buy_order.status == OrderStatus.OPEN
-        )
-        self.status.active_sell_orders = sum(
-            1 for l in self.grid_levels 
-            if l.sell_order and l.sell_order.status == OrderStatus.OPEN
-        )
+        active_buys = 0
+        active_sells = 0
+        for l in self.grid_levels:
+            if l.buy_order:
+                active_buys += 1
+            if l.sell_order:
+                active_sells += 1
+        self.status.active_buy_orders = active_buys
+        self.status.active_sell_orders = active_sells
     
     async def _place_initial_orders(self):
         """放置初始网格订单
@@ -372,7 +440,20 @@ class GridStrategy:
         单向挂单模式：
         - 当前价格下方挂 N 个买单（只挂买单）
         - 当前价格上方挂 N 个卖单（只挂卖单）
+        
+        注意：挂单前会先取消所有现有挂单，避免重复
         """
+        # 先取消所有现有挂单，避免重复
+        try:
+            existing_orders = await self.exchange.get_open_orders(self.config.symbol)
+            if existing_orders:
+                logger.info(f"检测到 {len(existing_orders)} 个现有挂单，先取消")
+                for order in existing_orders:
+                    await self.exchange.cancel_order(self.config.symbol, order.id)
+                await asyncio.sleep(1)  # 等待取消完成
+        except Exception as e:
+            logger.warning(f"取消现有挂单时出错: {e}")
+        
         ticker = await self.exchange.get_ticker(self.config.symbol)
         current_price = ticker.last
         
@@ -386,6 +467,43 @@ class GridStrategy:
         # 保留 1 格缓冲
         self._buy_grids = max(1, half_grids - 1)
         self._sell_grids = max(1, half_grids - 1)
+        
+        # 检查余额，如果币不够则自动买入
+        base_asset = self.config.symbol.split('/')[0]
+        usdt_balance = await self.exchange.get_balance("USDT")
+        coin_balance = await self.exchange.get_balance(base_asset)
+        
+        # 计算需要的币数量（卖单需要的币 + 1格缓冲）
+        need_coin = self._per_grid_qty * Decimal(str(self._sell_grids + 1))
+        # 计算需要的 USDT 数量（买单需要的 USDT + 1格缓冲）
+        need_usdt = self._per_grid_usdt * Decimal(str(self._buy_grids + 1))
+        
+        logger.info(f"余额检查: USDT={float(usdt_balance.free):.2f}, {base_asset}={float(coin_balance.free):.6f}")
+        logger.info(f"需求: USDT={float(need_usdt):.2f}, {base_asset}={float(need_coin):.6f}")
+        
+        # 如果币不够，用 USDT 买入
+        if coin_balance.free < need_coin and usdt_balance.free > need_usdt:
+            buy_coin_amount = need_coin - coin_balance.free
+            buy_usdt_cost = buy_coin_amount * current_price
+            # 加 0.5% 滑点
+            buy_price = current_price * Decimal("1.005")
+            
+            logger.info(f"币不足，需要买入 {float(buy_coin_amount):.6f} {base_asset}，"
+                        f"预计花费 ${float(buy_usdt_cost):.2f}")
+            
+            try:
+                # 用市价单买入
+                order = await self.exchange.create_limit_order(
+                    symbol=self.config.symbol,
+                    side=OrderSide.BUY,
+                    price=self._round_price(buy_price),
+                    quantity=self._round_quantity(buy_coin_amount)
+                )
+                logger.info(f"已买入 {float(buy_coin_amount):.6f} {base_asset}")
+                # 等待成交
+                await asyncio.sleep(2)
+            except Exception as e:
+                logger.error(f"自动买入币失败: {e}")
         
         self.grid_levels = []
         
@@ -421,19 +539,33 @@ class GridStrategy:
         self.grid_levels.sort(key=lambda x: x.buy_price if x.buy_price > 0 else x.sell_price)
         
         # 挂买单（只挂买单）
+        buy_success = 0
+        buy_fail = 0
         for level in self.grid_levels:
             if level.buy_price > 0:
-                await self._place_buy_order(level)
-                level.is_active = True
+                ok = await self._place_buy_order(level)
+                if ok:
+                    level.is_active = True
+                    buy_success += 1
+                else:
+                    buy_fail += 1
         
         # 挂卖单（只挂卖单）
+        sell_success = 0
+        sell_fail = 0
         for level in self.grid_levels:
             if level.sell_price > 0:
-                await self._place_sell_order(level)
-                level.is_active = True
+                ok = await self._place_sell_order(level)
+                if ok:
+                    level.is_active = True
+                    sell_success += 1
+                else:
+                    sell_fail += 1
         
-        logger.info(f"初始订单已放置: {self.status.active_buy_orders} 买单, "
-                    f"{self.status.active_sell_orders} 卖单")
+        logger.info(f"初始订单已放置: 买单 {buy_success}成功/{buy_fail}失败, "
+                    f"卖单 {sell_success}成功/{sell_fail}失败")
+        if buy_fail > 0 or sell_fail > 0:
+            logger.warning(f"部分订单挂单失败！请检查 API Key 权限和账户余额")
     
     async def _place_buy_order(self, level: GridLevel) -> bool:
         """在指定层级放置买单"""
