@@ -4,18 +4,73 @@ import json
 import os
 from typing import Dict, List, Optional, Any
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from loguru import logger
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from cryptography.fernet import Fernet
 
 from src.database import Database
 from src.exchanges.factory import ExchangeFactory
 from src.exchanges.base import ExchangeBase
 from src.models.config import GridConfig, ExchangeConfig
 from src.strategies.grid_strategy import GridStrategy
+from src.analysis.market_analyzer import MarketAnalyzer
+
+
+# ========== JWT 配置 ==========
+# 如果环境变量没设置，自动生成一个随机密钥
+_DEFAULT_SECRET = os.getenv("JWT_SECRET")
+if not _DEFAULT_SECRET:
+    import secrets
+    _DEFAULT_SECRET = secrets.token_hex(32)
+    os.environ["JWT_SECRET"] = _DEFAULT_SECRET
+SECRET_KEY = _DEFAULT_SECRET
+
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 小时
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer(auto_error=False)
+limiter = Limiter(key_func=get_remote_address)
+
+
+# ========== API Key 加密 ==========
+# 用 JWT_SECRET 派生 Fernet 密钥来加密 API Secret
+import base64
+import hashlib
+
+def _get_fernet_key() -> bytes:
+    """从 JWT_SECRET 派生 Fernet 密钥"""
+    digest = hashlib.sha256(SECRET_KEY.encode()).digest()
+    return base64.urlsafe_b64encode(digest)
+
+_fernet = Fernet(_get_fernet_key())
+
+def _encrypt_secret(secret: str) -> str:
+    """加密 API Secret"""
+    if not secret:
+        return ""
+    return _fernet.encrypt(secret.encode()).decode()
+
+def _decrypt_secret(encrypted: str) -> str:
+    """解密 API Secret"""
+    if not encrypted:
+        return ""
+    try:
+        return _fernet.decrypt(encrypted.encode()).decode()
+    except Exception:
+        return ""
 
 
 # ========== 加载 .env 文件 ==========
@@ -59,6 +114,31 @@ class ApiKeyConfig(BaseModel):
     api_secret: str
 
 
+# ========== JWT 辅助函数 ==========
+
+def create_access_token(data: dict) -> str:
+    """创建 JWT token"""
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
+    """验证 JWT token，返回用户名"""
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="请先登录")
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        if username is None:
+            raise HTTPException(status_code=401, detail="Token 无效")
+        return username
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token 已过期或无效")
+
+
 class GridBotAPI:
     """GRID-Pro API 服务"""
     
@@ -75,6 +155,11 @@ class GridBotAPI:
         
         @asynccontextmanager
         async def lifespan(app: FastAPI):
+            # 启动时自动恢复网格
+            try:
+                await self._auto_recover_grid()
+            except Exception as e:
+                logger.error(f"自动恢复网格失败: {e}")
             yield
             # 关闭时停止策略
             if self.strategy:
@@ -83,18 +168,81 @@ class GridBotAPI:
         app = FastAPI(title="GRID-Pro", lifespan=lifespan)
         self.app = app
         
+        # 添加速率限制
+        app.state.limiter = limiter
+        app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+        
+        # CORS 保护 - 只允许同源访问
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=[],
+            allow_credentials=False,
+            allow_methods=[],
+            allow_headers=[],
+        )
+        
         # 挂载静态文件
         import os
         static_dir = os.path.join(os.path.dirname(__file__), "static")
         if os.path.exists(static_dir):
             app.mount("/static", StaticFiles(directory=static_dir), name="static")
         
+        # ========== 公开接口（无需登录） ==========
+        
         @app.get("/")
         async def root():
+            return FileResponse(os.path.join(static_dir, "login.html"))
+        
+        @app.get("/app")
+        async def app_page():
             return FileResponse(os.path.join(static_dir, "index.html"))
         
+        @app.post("/api/register")
+        @limiter.limit("5/minute")
+        async def register(request: Request, data: dict):
+            """注册"""
+            username = data.get("username", "").strip()
+            password = data.get("password", "").strip()
+            if not username or not password:
+                raise HTTPException(400, "用户名和密码不能为空")
+            if len(username) < 3 or len(username) > 20:
+                raise HTTPException(400, "用户名长度 3-20 个字符")
+            if len(password) < 6:
+                raise HTTPException(400, "密码长度至少 6 位")
+            
+            password_hash = pwd_context.hash(password)
+            if self.db.create_user(username, password_hash):
+                logger.info(f"新用户注册: {username}")
+                return {"success": True, "message": "注册成功"}
+            else:
+                raise HTTPException(400, "用户名已存在")
+        
+        @app.post("/api/login")
+        @limiter.limit("10/minute")
+        async def login(request: Request, data: dict):
+            """登录"""
+            username = data.get("username", "").strip()
+            password = data.get("password", "").strip()
+            if not username or not password:
+                raise HTTPException(400, "用户名和密码不能为空")
+            
+            user = self.db.get_user(username)
+            if not user or not pwd_context.verify(password, user["password_hash"]):
+                raise HTTPException(401, "用户名或密码错误")
+            
+            token = create_access_token({"sub": username})
+            logger.info(f"用户登录: {username}")
+            return {"success": True, "token": token, "username": username}
+        
+        @app.get("/api/check-auth")
+        async def check_auth(username: str = Depends(get_current_user)):
+            """检查登录状态"""
+            return {"authenticated": True, "username": username}
+        
+        # ========== 受保护的 API 接口 ==========
+        
         @app.get("/api/status")
-        async def get_status():
+        async def get_status(username: str = Depends(get_current_user)):
             """获取当前状态"""
             if not self.strategy or not self._running:
                 return {"is_running": False}
@@ -188,7 +336,7 @@ class GridBotAPI:
 
         
         @app.post("/api/start")
-        async def start_grid(req: StartGridRequest):
+        async def start_grid(req: StartGridRequest, username: str = Depends(get_current_user)):
             """启动 GRID-Pro"""
             if self._running:
                 raise HTTPException(400, "网格策略已在运行中")
@@ -259,7 +407,7 @@ class GridBotAPI:
                 raise HTTPException(500, f"启动失败: {str(e)}")
         
         @app.post("/api/stop")
-        async def stop_grid():
+        async def stop_grid(username: str = Depends(get_current_user)):
             """停止 GRID-Pro"""
             if not self._running or not self.strategy:
                 raise HTTPException(400, "没有运行中的网格策略")
@@ -323,13 +471,53 @@ class GridBotAPI:
                 logger.error(f"获取币种列表失败: {e}")
                 return {"symbols": [], "error": str(e)}
         
+        @app.get("/api/analysis")
+        async def get_analysis(exchange: str = "binance", symbol: str = "BTC/USDT"):
+            """获取多周期技术分析"""
+            try:
+                exchange_config = ExchangeConfig(
+                    name=exchange,
+                    api_key="",
+                    api_secret=""
+                )
+                ex = ExchangeFactory.create_exchange(exchange_config)
+                analyzer = MarketAnalyzer(ex)
+                result = await analyzer.analyze(symbol)
+                await ex.close()
+                return result
+            except Exception as e:
+                logger.error(f"技术分析失败: {e}")
+                return {"symbol": symbol, "exchange": exchange, "error": str(e), "intervals": {}}
+        
+        @app.get("/api/advice")
+        async def get_trading_advice(exchange: str = "binance", symbol: str = "BTC/USDT"):
+            """获取综合交易建议"""
+            try:
+                exchange_config = ExchangeConfig(
+                    name=exchange,
+                    api_key="",
+                    api_secret=""
+                )
+                ex = ExchangeFactory.create_exchange(exchange_config)
+                analyzer = MarketAnalyzer(ex)
+                analysis = await analyzer.analyze(symbol)
+                advice = analyzer.get_trading_advice(analysis)
+                await ex.close()
+                return advice
+            except Exception as e:
+                logger.error(f"获取交易建议失败: {e}")
+                return {"score": 0, "summary": f"获取建议失败: {str(e)}", "suggestions": [], "risk_warnings": []}
+        
         def _get_api_keys(exchange: str) -> tuple:
-            """从环境变量获取 API Key"""
+            """从环境变量获取 API Key（自动解密 Secret）"""
             prefix = exchange.upper()
-            return (
-                os.getenv(f"{prefix}_API_KEY", ""),
-                os.getenv(f"{prefix}_API_SECRET", "")
-            )
+            api_key = os.getenv(f"{prefix}_API_KEY", "")
+            encrypted_secret = os.getenv(f"{prefix}_API_SECRET", "")
+            # 尝试解密，如果解密失败则返回原始值（兼容旧数据）
+            api_secret = _decrypt_secret(encrypted_secret)
+            if not api_secret:
+                api_secret = encrypted_secret
+            return (api_key, api_secret)
         
         def _save_env_file(key: str, value: str):
             """保存单个环境变量到 .env 文件"""
@@ -350,24 +538,26 @@ class GridBotAPI:
                 f.writelines(lines)
         
         @app.post("/api/keys")
-        async def save_api_keys(config: ApiKeyConfig):
-            """保存 API Key 到 .env 文件"""
+        async def save_api_keys(config: ApiKeyConfig, username: str = Depends(get_current_user)):
+            """保存 API Key 到 .env 文件（Secret 加密存储）"""
             try:
                 prefix = config.exchange.upper()
                 _save_env_file(f"{prefix}_API_KEY", config.api_key)
-                _save_env_file(f"{prefix}_API_SECRET", config.api_secret)
-                # 重新加载环境变量
+                # 加密存储 Secret
+                encrypted = _encrypt_secret(config.api_secret)
+                _save_env_file(f"{prefix}_API_SECRET", encrypted)
+                # 重新加载环境变量（存加密后的值）
                 os.environ[f"{prefix}_API_KEY"] = config.api_key
-                os.environ[f"{prefix}_API_SECRET"] = config.api_secret
-                logger.info(f"{config.exchange} API Key 已保存")
+                os.environ[f"{prefix}_API_SECRET"] = encrypted
+                logger.info(f"{config.exchange} API Key 已保存（加密存储）")
                 return {"success": True, "message": f"✅ {config.exchange} API Key 已保存"}
             except Exception as e:
                 logger.error(f"保存 API Key 失败: {e}")
                 return {"success": False, "message": f"❌ 保存失败: {str(e)}"}
         
         @app.get("/api/keys")
-        async def get_api_keys():
-            """获取各交易所 API Key 配置状态（返回 Key 用于前端回填，Secret 只返回是否已配置）"""
+        async def get_api_keys(username: str = Depends(get_current_user)):
+            """获取各交易所 API Key 配置状态（不返回 Secret）"""
             result = {}
             for exchange in ["binance", "gateio"]:
                 key, secret = _get_api_keys(exchange)
@@ -380,7 +570,7 @@ class GridBotAPI:
             return {"keys": result}
         
         @app.get("/api/ping")
-        async def ping(exchange: str = "binance"):
+        async def ping(exchange: str = "binance", username: str = Depends(get_current_user)):
             """测试交易所连接"""
             try:
                 api_key, api_secret = _get_api_keys(exchange)
@@ -406,7 +596,7 @@ class GridBotAPI:
                 return {"connected": False, "message": f"❌ 连接失败: {str(e)}"}
         
         @app.get("/api/balance")
-        async def get_balance(exchange: str = "binance", asset: str = "USDT"):
+        async def get_balance(exchange: str = "binance", asset: str = "USDT", username: str = Depends(get_current_user)):
             """获取指定资产余额"""
             try:
                 api_key, api_secret = _get_api_keys(exchange)
@@ -432,7 +622,7 @@ class GridBotAPI:
                 return {"asset": asset, "free": 0, "locked": 0, "total": 0, "error": str(e)}
         
         @app.get("/api/configs")
-        async def get_configs():
+        async def get_configs(username: str = Depends(get_current_user)):
             """获取历史配置"""
             return {"configs": self.db.get_grid_configs()}
         
@@ -518,6 +708,104 @@ class GridBotAPI:
         
         for ws in dead_sockets:
             self._websockets.remove(ws)
+    
+    async def _auto_recover_grid(self):
+        """自动恢复网格策略（服务重启时从数据库和交易所恢复）"""
+        # 检查数据库是否有运行中的网格
+        config = self.db.get_active_grid_config()
+        if not config:
+            logger.info("没有需要恢复的网格策略")
+            return
+        
+        exchange_name = config.get('exchange', 'binance')
+        symbol = config.get('symbol', '')
+        logger.info(f"检测到运行中的网格: {symbol} @ {exchange_name}，尝试恢复...")
+        
+        # 获取 API Key
+        api_key, api_secret = _get_api_keys(exchange_name)
+        if not api_key or not api_secret:
+            logger.warning(f"{exchange_name} API Key 未配置，无法恢复网格")
+            self.db.update_grid_status(config['id'], "stopped")
+            return
+        
+        try:
+            # 创建交易所实例
+            exchange_config = ExchangeConfig(
+                name=exchange_name,
+                api_key=api_key,
+                api_secret=api_secret
+            )
+            self.exchange = ExchangeFactory.create_exchange(exchange_config)
+            
+            # 从交易所拉取当前挂单
+            open_orders = await self.exchange.get_open_orders(symbol)
+            
+            if not open_orders:
+                logger.warning(f"没有找到现有挂单，标记网格为已停止")
+                self.db.update_grid_status(config['id'], "stopped")
+                await self.exchange.close()
+                self.exchange = None
+                return
+            
+            # 创建网格配置
+            grid_config = GridConfig(
+                symbol=symbol,
+                grid_count=config.get('grid_count', 26),
+                price_spacing=config.get('price_spacing'),
+                usdt_amount=config.get('total_investment'),
+                coin_amount=config.get('base_quantity'),
+                stop_loss_price=config.get('stop_loss_price'),
+                total_investment=config.get('total_investment'),
+                base_quantity=config.get('base_quantity'),
+                profit_per_trade=config.get('profit_per_trade', 0.01),
+                fee_rate=config.get('fee_rate', 0.002)
+            )
+            
+            # 创建策略
+            self.strategy = GridStrategy(self.exchange, grid_config)
+            self.strategy.db_config_id = config['id']
+            
+            # 设置回调
+            self.strategy.on_order_placed = self._on_order_placed
+            self.strategy.on_order_filled_callback = self._on_order_filled
+            self.strategy.on_grid_adjusted = self._on_grid_adjusted
+            self.strategy.on_status_update = self._on_status_update
+            
+            # 从现有挂单恢复
+            recovered = await self.strategy.recover_from_existing_orders(open_orders)
+            
+            if not recovered:
+                logger.warning("网格恢复失败，标记为已停止")
+                self.db.update_grid_status(config['id'], "stopped")
+                await self.exchange.close()
+                self.exchange = None
+                self.strategy = None
+                return
+            
+            # 启动主循环（不重新挂单，直接监控现有订单）
+            self._running = True
+            self.strategy._running = True
+            self.strategy.status.is_running = True
+            
+            # 启动主循环
+            task = asyncio.create_task(self.strategy._main_loop())
+            self.strategy._tasks.append(task)
+            
+            # 启动调整循环
+            adjust_task = asyncio.create_task(self.strategy._auto_adjust_loop())
+            self.strategy._tasks.append(adjust_task)
+            
+            logger.info(f"✅ 网格策略已自动恢复: {symbol} @ {exchange_name} "
+                        f"({len(open_orders)} 个挂单)")
+            
+        except Exception as e:
+            logger.error(f"自动恢复网格失败: {e}")
+            self.db.update_grid_status(config['id'], "stopped")
+            if self.exchange:
+                await self.exchange.close()
+                self.exchange = None
+            self.strategy = None
+            self._running = False
 
 
 # 创建全局实例

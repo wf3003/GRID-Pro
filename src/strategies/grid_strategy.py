@@ -167,6 +167,93 @@ class GridStrategy:
         logger.info(f"网格已初始化: {funds['total_grids']} 格 "
                     f"({funds['buy_grids']}买 + {funds['sell_grids']}卖)")
     
+    async def recover_from_existing_orders(self, open_orders: List[Order]) -> bool:
+        """从现有挂单恢复网格策略
+        
+        用于服务重启后，从交易所拉取当前挂单重建网格。
+        
+        Args:
+            open_orders: 交易所当前挂单列表
+            
+        Returns:
+            是否成功恢复
+        """
+        if not open_orders:
+            logger.warning("没有现有挂单，无法恢复")
+            return False
+        
+        logger.info(f"从 {len(open_orders)} 个现有挂单恢复网格")
+        
+        # 获取精度信息
+        try:
+            self._price_precision, self._qty_precision = \
+                await self.exchange.get_symbol_precision(self.config.symbol)
+        except Exception as e:
+            logger.warning(f"获取精度信息失败，使用默认值: {e}")
+        
+        # 获取当前价格
+        ticker = await self.exchange.get_ticker(self.config.symbol)
+        current_price = ticker.last
+        self.status.current_price = current_price
+        
+        # 计算网格参数
+        self._grid_spacing = self._calculate_grid_spacing(current_price)
+        self._per_grid_qty = self._calculate_per_grid_quantity(current_price)
+        self._per_grid_usdt = self._calculate_per_grid_amount()
+        
+        half_grids = self.config.grid_count // 2
+        self._buy_grids = max(1, half_grids - 1)
+        self._sell_grids = max(1, half_grids - 1)
+        
+        # 按价格排序挂单
+        buy_orders = sorted(
+            [o for o in open_orders if o.side == OrderSide.BUY],
+            key=lambda x: x.price,
+            reverse=True  # 从高到低
+        )
+        sell_orders = sorted(
+            [o for o in open_orders if o.side == OrderSide.SELL],
+            key=lambda x: x.price,
+            reverse=False  # 从低到高
+        )
+        
+        self.grid_levels = []
+        
+        # 重建买单网格
+        for i, order in enumerate(buy_orders):
+            level = GridLevel(
+                level=i + 1,
+                buy_price=order.price,
+                sell_price=Decimal("0"),
+                quantity=order.quantity,
+                is_active=True
+            )
+            level.buy_order = order
+            self.grid_levels.append(level)
+        
+        # 重建卖单网格
+        for i, order in enumerate(sell_orders):
+            level = GridLevel(
+                level=i + 1 + len(buy_orders),
+                buy_price=Decimal("0"),
+                sell_price=order.price,
+                quantity=order.quantity,
+                is_active=True
+            )
+            level.sell_order = order
+            self.grid_levels.append(level)
+        
+        # 按价格排序
+        self.grid_levels.sort(key=lambda x: x.buy_price if x.buy_price > 0 else x.sell_price)
+        
+        # 更新统计
+        self.status.active_buy_orders = len(buy_orders)
+        self.status.active_sell_orders = len(sell_orders)
+        
+        logger.info(f"网格恢复完成: {self.status.active_buy_orders} 买单, "
+                    f"{self.status.active_sell_orders} 卖单")
+        return True
+    
     async def start(self):
         """启动网格策略"""
         if self._running:

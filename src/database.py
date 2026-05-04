@@ -31,6 +31,16 @@ class Database:
         try:
             cursor = conn.cursor()
             
+            # 用户表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
             # 网格策略配置表
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS grid_configs (
@@ -387,6 +397,35 @@ class Database:
                 WHERE grid_config_id = ?
                 ORDER BY created_at DESC LIMIT 1
             """, (grid_config_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+    
+    # ========== 用户管理 ==========
+    
+    def create_user(self, username: str, password_hash: str) -> bool:
+        """创建用户"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                (username, password_hash)
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        finally:
+            conn.close()
+    
+    def get_user(self, username: str) -> Optional[Dict[str, Any]]:
+        """获取用户信息"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
             row = cursor.fetchone()
             return dict(row) if row else None
         finally:

@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import time
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, Tuple
 from urllib.parse import urlencode
@@ -9,7 +10,7 @@ from urllib.parse import urlencode
 import aiohttp
 
 from src.exchanges.base import ExchangeBase
-from src.models.trading import Order, OrderSide, OrderStatus, OrderType, Ticker, Balance
+from src.models.trading import Order, OrderSide, OrderStatus, OrderType, Ticker, Balance, Kline
 
 
 class BinanceExchange(ExchangeBase):
@@ -28,7 +29,11 @@ class BinanceExchange(ExchangeBase):
     
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            # 跳过系统代理设置，直接连接
+            self._session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(force_close=True),
+                trust_env=False  # 忽略 http_proxy/https_proxy 环境变量
+            )
         return self._session
     
     def _sign_request(self, params: dict) -> dict:
@@ -59,7 +64,7 @@ class BinanceExchange(ExchangeBase):
             params['timestamp'] = int(time.time() * 1000)
             params = self._sign_request(params)
         
-        async with session.request(method, url, params=params, headers=headers) as response:
+        async with session.request(method, url, params=params, headers=headers, proxy=None) as response:
             data = await response.json()
             if response.status != 200:
                 raise Exception(f"Binance API error: {data}")
@@ -232,6 +237,43 @@ class BinanceExchange(ExchangeBase):
             })
         
         return pairs
+    
+    async def get_klines(
+        self,
+        symbol: str,
+        interval: str = "1h",
+        limit: int = 100
+    ) -> List[Kline]:
+        """获取 K 线数据"""
+        params = {
+            'symbol': symbol,
+            'interval': interval,
+            'limit': limit
+        }
+        data = await self._request("GET", "/api/v3/klines", params=params)
+        
+        klines = []
+        for item in data:
+            # Binance K 线格式:
+            # [open_time, open, high, low, close, volume, close_time,
+            #  quote_volume, trades, taker_buy_volume, taker_buy_quote_volume, ignore]
+            klines.append(Kline(
+                exchange=self.name,
+                symbol=symbol,
+                interval=interval,
+                open_time=datetime.fromtimestamp(item[0] / 1000),
+                close_time=datetime.fromtimestamp(item[6] / 1000),
+                open=Decimal(item[1]),
+                high=Decimal(item[2]),
+                low=Decimal(item[3]),
+                close=Decimal(item[4]),
+                volume=Decimal(item[5]),
+                quote_volume=Decimal(item[7]),
+                taker_buy_volume=Decimal(item[9]),
+                taker_buy_quote_volume=Decimal(item[10])
+            ))
+        
+        return klines
     
     async def close(self):
         """关闭会话"""

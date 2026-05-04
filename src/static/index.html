@@ -11,7 +11,11 @@
         <!-- 顶部标题 -->
         <header class="header">
             <h1>🔧 GRID-Pro</h1>
-            <span id="connectionStatus" class="status-badge disconnected">未连接</span>
+            <div class="header-right">
+                <span id="headerUsername" class="header-username"></span>
+                <button class="btn btn-logout" onclick="logout()">退出</button>
+                <span id="connectionStatus" class="status-badge disconnected">未连接</span>
+            </div>
         </header>
 
         <!-- 顶部信息栏 -->
@@ -194,6 +198,70 @@
                     <button id="startBtn" class="btn btn-start" onclick="startGrid()">🚀 启动</button>
                     <button id="stopBtn" class="btn btn-stop" onclick="stopGrid()" disabled>⏹ 停止</button>
                 </div>
+            </div>
+        </section>
+
+        <!-- 交易建议面板 -->
+        <section class="config-panel advice-panel">
+            <div class="panel-header" onclick="toggleAdvicePanel()">
+                <h3>💡 综合交易建议</h3>
+                <span id="adviceToggleIcon" class="toggle-icon">▶</span>
+            </div>
+            <div id="advicePanel" class="panel-body" style="display:none;">
+                <div class="advice-loading" id="adviceLoading">加载中...</div>
+                <div id="adviceContent" style="display:none;">
+                    <div class="advice-score" id="adviceScore">
+                        <div class="advice-score-circle" id="adviceScoreCircle">
+                            <span id="adviceScoreValue">--</span>
+                        </div>
+                        <div class="advice-score-label">网格适合度评分</div>
+                    </div>
+                    <div class="advice-summary" id="adviceSummary"></div>
+                    <div class="advice-detail" id="adviceDetail"></div>
+                    <div class="advice-section">
+                        <h4>📋 操作建议</h4>
+                        <ul id="adviceSuggestions"></ul>
+                    </div>
+                    <div class="advice-section">
+                        <h4>⚠️ 风险提示</h4>
+                        <ul id="adviceWarnings"></ul>
+                    </div>
+                    <div class="advice-section">
+                        <h4>📊 分析依据</h4>
+                        <ul id="adviceReasons"></ul>
+                    </div>
+                    <div class="advice-price-info">
+                        <span>当前价格: <strong id="adviceCurrentPrice">--</strong></span>
+                        <span>近期低点: <strong id="adviceRecentLow">--</strong></span>
+                        <span>近期高点: <strong id="adviceRecentHigh">--</strong></span>
+                    </div>
+                </div>
+                <div class="advice-error" id="adviceError" style="display:none;"></div>
+            </div>
+        </section>
+
+        <!-- 技术分析面板 -->
+        <section class="config-panel analysis-panel">
+            <div class="panel-header" onclick="toggleAnalysisPanel()">
+                <h3>📊 多周期技术分析</h3>
+                <span id="analysisToggleIcon" class="toggle-icon">▶</span>
+            </div>
+            <div id="analysisPanel" class="panel-body" style="display:none;">
+                <div class="analysis-loading" id="analysisLoading">加载中...</div>
+                <div id="analysisContent" style="display:none;">
+                    <div class="analysis-tabs" id="analysisTabs">
+                        <button class="analysis-tab active" data-interval="15m" onclick="switchAnalysisTab('15m')">15分钟</button>
+                        <button class="analysis-tab" data-interval="30m" onclick="switchAnalysisTab('30m')">30分钟</button>
+                        <button class="analysis-tab" data-interval="1h" onclick="switchAnalysisTab('1h')">1小时</button>
+                        <button class="analysis-tab" data-interval="4h" onclick="switchAnalysisTab('4h')">4小时</button>
+                        <button class="analysis-tab" data-interval="1d" onclick="switchAnalysisTab('1d')">日线</button>
+                        <button class="analysis-tab" data-interval="1w" onclick="switchAnalysisTab('1w')">周线</button>
+                    </div>
+                    <div id="analysisIntervalContent">
+                        <!-- 由 JS 动态渲染 -->
+                    </div>
+                </div>
+                <div class="analysis-error" id="analysisError" style="display:none;"></div>
             </div>
         </section>
 

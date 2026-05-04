@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GRID-Pro 登录</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0d1b2a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            background: #1a2a3a;
+            border-radius: 16px;
+            padding: 40px;
+            width: 380px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+        .logo {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .logo h1 {
+            font-size: 28px;
+            background: linear-gradient(135deg, #4fc3f7, #00e676);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .logo p { color: #8899aa; font-size: 14px; margin-top: 5px; }
+        .tab-bar {
+            display: flex;
+            margin-bottom: 24px;
+            border-bottom: 1px solid #2a3a4a;
+        }
+        .tab {
+            flex: 1;
+            text-align: center;
+            padding: 10px;
+            cursor: pointer;
+            color: #8899aa;
+            font-size: 15px;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        .tab.active {
+            color: #4fc3f7;
+            border-bottom-color: #4fc3f7;
+        }
+        .form-group {
+            margin-bottom: 18px;
+        }
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            color: #8899aa;
+            margin-bottom: 6px;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 12px 14px;
+            background: #0d1b2a;
+            border: 1px solid #2a3a4a;
+            border-radius: 8px;
+            color: #e0e0e0;
+            font-size: 15px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .form-group input:focus {
+            border-color: #4fc3f7;
+        }
+        .btn {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            font-weight: 600;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #4fc3f7, #00e676);
+            color: #0d1b2a;
+        }
+        .btn-primary:hover { opacity: 0.9; }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+        .error-msg {
+            color: #f44336;
+            font-size: 13px;
+            margin-top: 10px;
+            text-align: center;
+            min-height: 20px;
+        }
+        .success-msg {
+            color: #4caf50;
+            font-size: 13px;
+            margin-top: 10px;
+            text-align: center;
+        }
+        .loading {
+            text-align: center;
+            margin-top: 10px;
+            color: #8899aa;
+            font-size: 13px;
+        }
+        .form-footer {
+            text-align: center;
+            margin-top: 16px;
+            font-size: 13px;
+            color: #8899aa;
+        }
+        .form-footer a {
+            color: #4fc3f7;
+            cursor: pointer;
+            text-decoration: none;
+        }
+        .form-footer a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <h1>GRID-Pro</h1>
+            <p>网格交易机器人</p>
+        </div>
+        
+        <div class="tab-bar">
+            <div class="tab active" id="tabLogin" onclick="switchTab('login')">登录</div>
+            <div class="tab" id="tabRegister" onclick="switchTab('register')">注册</div>
+        </div>
+        
+        <!-- 登录表单 -->
+        <div id="loginForm">
+            <div class="form-group">
+                <label>用户名</label>
+                <input type="text" id="loginUsername" placeholder="输入用户名" autocomplete="username">
+            </div>
+            <div class="form-group">
+                <label>密码</label>
+                <input type="password" id="loginPassword" placeholder="输入密码" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+            </div>
+            <button class="btn btn-primary" id="loginBtn" onclick="doLogin()">登 录</button>
+            <div id="loginError" class="error-msg"></div>
+        </div>
+        
+        <!-- 注册表单 -->
+        <div id="registerForm" style="display:none;">
+            <div class="form-group">
+                <label>用户名</label>
+                <input type="text" id="registerUsername" placeholder="3-20 个字符" autocomplete="off">
+            </div>
+            <div class="form-group">
+                <label>密码</label>
+                <input type="password" id="registerPassword" placeholder="至少 6 位" autocomplete="new-password" onkeydown="if(event.key==='Enter')doRegister()">
+            </div>
+            <button class="btn btn-primary" id="registerBtn" onclick="doRegister()">注 册</button>
+            <div id="registerError" class="error-msg"></div>
+        </div>
+    </div>
+    
+    <script>
+        // 检查是否已登录
+        const token = localStorage.getItem('grid_pro_token');
+        if (token) {
+            // 验证 token 是否有效
+            fetch('/api/check-auth', {
+                headers: { 'Authorization': 'Bearer ' + token }
+            }).then(r => {
+                if (r.ok) {
+                    window.location.href = '/app';
+                } else {
+                    // Token 无效，清除它
+                    localStorage.removeItem('grid_pro_token');
+                    localStorage.removeItem('grid_pro_username');
+                }
+            }).catch(() => {
+                // 网络错误，不清除 token，让用户手动登录
+            });
+        }
+        
+        function switchTab(tab) {
+            document.getElementById('tabLogin').className = tab === 'login' ? 'tab active' : 'tab';
+            document.getElementById('tabRegister').className = tab === 'register' ? 'tab active' : 'tab';
+            document.getElementById('loginForm').style.display = tab === 'login' ? 'block' : 'none';
+            document.getElementById('registerForm').style.display = tab === 'register' ? 'block' : 'none';
+            document.getElementById('loginError').textContent = '';
+            document.getElementById('registerError').textContent = '';
+        }
+        
+        async function doLogin() {
+            const username = document.getElementById('loginUsername').value.trim();
+            const password = document.getElementById('loginPassword').value;
+            const btn = document.getElementById('loginBtn');
+            const errEl = document.getElementById('loginError');
+            
+            if (!username || !password) {
+                errEl.textContent = '请输入用户名和密码';
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.textContent = '登录中...';
+            errEl.textContent = '';
+            
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+                
+                if (res.ok && data.token) {
+                    localStorage.setItem('grid_pro_token', data.token);
+                    localStorage.setItem('grid_pro_username', data.username);
+                    window.location.href = '/app';
+                } else {
+                    errEl.textContent = data.detail || '登录失败';
+                }
+            } catch (e) {
+                errEl.textContent = '网络错误，请重试';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '登 录';
+            }
+        }
+        
+        async function doRegister() {
+            const username = document.getElementById('registerUsername').value.trim();
+            const password = document.getElementById('registerPassword').value;
+            const btn = document.getElementById('registerBtn');
+            const errEl = document.getElementById('registerError');
+            
+            if (!username || !password) {
+                errEl.textContent = '请输入用户名和密码';
+                return;
+            }
+            if (username.length < 3 || username.length > 20) {
+                errEl.textContent = '用户名长度 3-20 个字符';
+                return;
+            }
+            if (password.length < 6) {
+                errEl.textContent = '密码长度至少 6 位';
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.textContent = '注册中...';
+            errEl.textContent = '';
+            
+            try {
+                const res = await fetch('/api/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+                
+                if (res.ok) {
+                    errEl.className = 'success-msg';
+                    errEl.textContent = '注册成功！请登录';
+                    setTimeout(() => switchTab('login'), 1000);
+                } else {
+                    errEl.className = 'error-msg';
+                    errEl.textContent = data.detail || '注册失败';
+                }
+            } catch (e) {
+                errEl.textContent = '网络错误，请重试';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '注 册';
+            }
+        }
+    </script>
+</body>
+</html>

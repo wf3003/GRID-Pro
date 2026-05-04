@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import Optional, List, Tuple
-from src.models.trading import Order, OrderSide, Ticker, Balance
+from src.models.trading import Order, OrderSide, Ticker, Balance, Kline
 
 
 class ExchangeBase(ABC):
@@ -77,5 +77,24 @@ class ExchangeBase(ABC):
                 - min_qty: 最小交易数量
                 - min_amount: 最小交易金额
                 - status: 交易状态，如 "TRADING"
+        """
+        pass
+    
+    @abstractmethod
+    async def get_klines(
+        self,
+        symbol: str,
+        interval: str = "1h",
+        limit: int = 100
+    ) -> List[Kline]:
+        """获取 K 线数据
+        
+        Args:
+            symbol: 交易对符号，如 "BTC/USDT"
+            interval: K 线周期，如 1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w
+            limit: 获取数量，默认 100
+            
+        Returns:
+            List[Kline]: K 线数据列表
         """
         pass

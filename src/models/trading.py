@@ -74,6 +74,23 @@ class Balance(BaseModel):
     total: Decimal
 
 
+class Kline(BaseModel):
+    """K 线数据"""
+    exchange: str
+    symbol: str
+    interval: str  # 1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w
+    open_time: datetime
+    close_time: datetime
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: Decimal
+    quote_volume: Decimal = Decimal("0")
+    taker_buy_volume: Decimal = Decimal("0")  # 主动买入成交量
+    taker_buy_quote_volume: Decimal = Decimal("0")  # 主动买入成交额
+
+
 class GridStatus(BaseModel):
     """网格状态"""
     symbol: str

@@ -6,9 +6,62 @@ let currentBalance = { usdt: 0, coin: 0 };
 let tickerData = null;
 let reconnectTimer = null;
 let statusTimer = null;
+let adviceLoadedSymbol = '';   // 记录已加载建议的币种
+let analysisLoadedSymbol = ''; // 记录已加载分析的币种
+
+// ========== Token 管理 ==========
+function getToken() {
+    return localStorage.getItem('grid_pro_token');
+}
+
+function getUsername() {
+    return localStorage.getItem('grid_pro_username') || '';
+}
+
+function logout() {
+    localStorage.removeItem('grid_pro_token');
+    localStorage.removeItem('grid_pro_username');
+    window.location.href = '/';
+}
+
+// 检查登录状态
+const token = getToken();
+if (!token) {
+    window.location.href = '/';
+}
+
+// 所有 fetch 请求自动带 Authorization header
+const originalFetch = window.fetch;
+window.fetch = function(url, options = {}) {
+    const token = getToken();
+    if (token) {
+        options = options || {};
+        options.headers = options.headers || {};
+        if (Array.isArray(options.headers)) {
+            options.headers.push(['Authorization', 'Bearer ' + token]);
+        } else {
+            options.headers['Authorization'] = 'Bearer ' + token;
+        }
+    }
+    return originalFetch.call(this, url, options).then(async res => {
+        if (res.status === 401) {
+            // Token 过期，跳回登录页（只在 /app 页面跳转，避免死循环）
+            if (window.location.pathname === '/app' || window.location.pathname === '/') {
+                logout();
+            }
+        }
+        return res;
+    });
+};
 
 // ========== 初始化 ==========
 document.addEventListener('DOMContentLoaded', () => {
+    // 显示用户名
+    const username = getUsername();
+    if (username) {
+        document.getElementById('headerUsername').textContent = '👤 ' + username;
+    }
+    
     loadApiKeys();
     loadSymbols();
     connectWebSocket();
@@ -21,6 +74,20 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('symbol').addEventListener('change', () => {
         updateTicker();
         updateCalculations();
+        // 切换币种后自动加载分析和建议
+        const symbol = document.getElementById('symbol').value;
+        if (symbol) {
+            adviceLoadedSymbol = symbol;
+            analysisLoadedSymbol = symbol;
+            // 自动展开建议面板并加载
+            document.getElementById('advicePanel').style.display = 'block';
+            document.getElementById('adviceToggleIcon').textContent = '▼';
+            loadAdvice();
+            // 自动展开分析面板并加载
+            document.getElementById('analysisPanel').style.display = 'block';
+            document.getElementById('analysisToggleIcon').textContent = '▼';
+            loadAnalysis();
+        }
     });
     document.getElementById('priceSpacing').addEventListener('input', () => {
         document.getElementById('priceSpacing').dataset.userModified = 'true';
@@ -232,7 +299,17 @@ async function updateBalance() {
 // ========== 计算逻辑 ==========
 function updateCalculations() {
     const price = currentPrice;
-    if (!price || price <= 0) return;
+    if (!price || price <= 0) {
+        // 价格还没加载时，显示等待状态
+        document.getElementById('priceSpacingHint').textContent = '价格间隔: 等待价格数据...';
+        document.getElementById('netProfitHint').textContent = '';
+        document.getElementById('perGridAmount').textContent = '--';
+        document.getElementById('needBuyCoin').textContent = '--';
+        document.getElementById('usdtMinHint').textContent = '';
+        document.getElementById('coinMinHint').textContent = '';
+        document.getElementById('minOrderHint').textContent = '';
+        return;
+    }
     
     const spacing = parseFloat(document.getElementById('priceSpacing').value) || 0.5;
     const gridCount = parseInt(document.getElementById('gridCount').value) || 26;
@@ -416,7 +493,6 @@ function updateCalculations() {
     
     // 网格间距（美元）
     const gridSpacing = price * spacingPct;
-    document.getElementById('gridSpacing').textContent = `$${formatPrice(gridSpacing)}`;
     document.getElementById('priceSpacingHint').textContent = `价格间隔: $${formatPrice(gridSpacing)}`;
     
     // 启动按钮状态
@@ -933,5 +1009,414 @@ function toggleApiPanel() {
     } else {
         panel.style.display = 'none';
         icon.textContent = '▶';
+    }
+}
+
+// ========== 技术分析面板 ==========
+let analysisData = null;
+let currentAnalysisInterval = '15m';
+
+function toggleAnalysisPanel() {
+    const panel = document.getElementById('analysisPanel');
+    const icon = document.getElementById('analysisToggleIcon');
+    if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+        icon.textContent = '▼';
+        // 只有币种变了才重新加载
+        const symbol = document.getElementById('symbol').value;
+        if (analysisLoadedSymbol !== symbol) {
+            analysisLoadedSymbol = symbol;
+            loadAnalysis();
+        }
+    } else {
+        panel.style.display = 'none';
+        icon.textContent = '▶';
+    }
+}
+
+async function loadAnalysis() {
+    const exchange = document.getElementById('exchange').value;
+    const symbol = document.getElementById('symbol').value;
+    
+    if (!symbol) {
+        document.getElementById('analysisLoading').style.display = 'block';
+        document.getElementById('analysisLoading').textContent = '请先选择币种';
+        document.getElementById('analysisContent').style.display = 'none';
+        document.getElementById('analysisError').style.display = 'none';
+        return;
+    }
+    
+    document.getElementById('analysisLoading').style.display = 'block';
+    document.getElementById('analysisLoading').textContent = '正在获取技术分析数据...';
+    document.getElementById('analysisContent').style.display = 'none';
+    document.getElementById('analysisError').style.display = 'none';
+    
+    const data = await apiGet(`/api/analysis?exchange=${exchange}&symbol=${symbol}`);
+    
+    document.getElementById('analysisLoading').style.display = 'none';
+    
+    if (data && data.intervals && Object.keys(data.intervals).length > 0) {
+        analysisData = data;
+        document.getElementById('analysisContent').style.display = 'block';
+        document.getElementById('analysisError').style.display = 'none';
+        
+        // 默认选中第一个有数据的周期
+        const intervals = Object.keys(data.intervals);
+        if (intervals.length > 0) {
+            currentAnalysisInterval = intervals[0];
+            renderAnalysisTab(currentAnalysisInterval);
+        }
+    } else if (data && data.error) {
+        document.getElementById('analysisError').style.display = 'block';
+        document.getElementById('analysisError').textContent = `❌ 分析失败: ${data.error}`;
+        document.getElementById('analysisContent').style.display = 'none';
+    } else {
+        document.getElementById('analysisError').style.display = 'block';
+        document.getElementById('analysisError').textContent = '❌ 无法获取分析数据';
+        document.getElementById('analysisContent').style.display = 'none';
+    }
+}
+
+function switchAnalysisTab(interval) {
+    currentAnalysisInterval = interval;
+    
+    // 更新 Tab 高亮
+    document.querySelectorAll('.analysis-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.interval === interval);
+    });
+    
+    renderAnalysisTab(interval);
+}
+
+function renderAnalysisTab(interval) {
+    if (!analysisData || !analysisData.intervals[interval]) {
+        document.getElementById('analysisIntervalContent').innerHTML = 
+            '<div class="analysis-error">该周期无数据</div>';
+        return;
+    }
+    
+    const data = analysisData.intervals[interval];
+    if (data.error) {
+        document.getElementById('analysisIntervalContent').innerHTML = 
+            `<div class="analysis-error">❌ ${data.error}</div>`;
+        return;
+    }
+    
+    const currentPrice = analysisData.current_price || data.current_price || 0;
+    const changeClass = data.change_pct >= 0 ? 'up' : 'down';
+    const lastChangeClass = data.last_change_pct >= 0 ? 'up' : 'down';
+    
+    // 构建均线 HTML
+    let maHtml = '';
+    const mas = [
+        { label: 'MA5', value: data.ma5 },
+        { label: 'MA10', value: data.ma10 },
+        { label: 'MA20', value: data.ma20 },
+        { label: 'MA60', value: data.ma60 }
+    ];
+    mas.forEach(ma => {
+        if (ma.value !== null && ma.value !== undefined) {
+            const color = ma.value > currentPrice ? '#f44336' : '#4caf50';
+            maHtml += `<span class="ma-item"><span class="ma-label">${ma.label}:</span><span style="color:${color}">$${formatPrice(ma.value)}</span></span>`;
+        }
+    });
+    
+    // 构建支撑阻力 HTML
+    let srHtml = '';
+    if (data.supports && data.supports.length > 0) {
+        data.supports.forEach(s => {
+            srHtml += `<span class="sr-item support">🟢 支撑 $${formatPrice(s)}</span>`;
+        });
+    }
+    if (data.resistances && data.resistances.length > 0) {
+        data.resistances.forEach(r => {
+            srHtml += `<span class="sr-item resistance">🔴 阻力 $${formatPrice(r)}</span>`;
+        });
+    }
+    if (!srHtml) srHtml = '<span style="color:#8899aa;font-size:13px;">暂无数据</span>';
+    
+    // 构建资金流量 HTML
+    const mf = data.money_flow || {};
+    const flowClass = mf.net_flow >= 0 ? 'positive' : 'negative';
+    const flowRatio = mf.flow_ratio ? (mf.flow_ratio * 100).toFixed(1) : '--';
+    
+    // 成交量柱状图
+    const volumeRatio = data.volume_ratio || 0;
+    const volumeBarWidth = Math.min(volumeRatio * 50, 100);  // 最大 100%
+    
+    const html = `
+        <div class="analysis-grid">
+            <!-- 当前价格 & 涨跌幅 -->
+            <div class="analysis-card">
+                <div class="analysis-card-title">当前价格</div>
+                <div class="analysis-card-value">$${formatPrice(currentPrice)}</div>
+            </div>
+            <div class="analysis-card">
+                <div class="analysis-card-title">周期涨跌幅</div>
+                <div class="analysis-card-value ${changeClass}">${data.change_pct >= 0 ? '+' : ''}${data.change_pct}%</div>
+            </div>
+            <div class="analysis-card">
+                <div class="analysis-card-title">最新 K 线涨跌</div>
+                <div class="analysis-card-value ${lastChangeClass}">${data.last_change_pct >= 0 ? '+' : ''}${data.last_change_pct}%</div>
+            </div>
+            <div class="analysis-card">
+                <div class="analysis-card-title">周期最高 / 最低</div>
+                <div class="analysis-card-value" style="font-size:14px;">
+                    <span style="color:#f44336;">H: $${formatPrice(data.high)}</span> / 
+                    <span style="color:#4caf50;">L: $${formatPrice(data.low)}</span>
+                </div>
+            </div>
+            
+            <!-- 趋势 -->
+            <div class="analysis-card full-width">
+                <div class="analysis-card-title">趋势判断</div>
+                <div class="analysis-card-value" style="font-size:15px;">${data.trend || '数据不足'}</div>
+            </div>
+            
+            <!-- 均线 -->
+            <div class="analysis-card full-width">
+                <div class="analysis-card-title">均线系统</div>
+                <div class="ma-row">${maHtml || '<span style="color:#8899aa;font-size:13px;">数据不足</span>'}</div>
+            </div>
+            
+            <!-- RSI -->
+            <div class="analysis-card">
+                <div class="analysis-card-title">RSI (14)</div>
+                <div class="analysis-card-value" style="font-size:18px; ${data.rsi >= 70 ? 'color:#f44336;' : data.rsi <= 30 ? 'color:#4caf50;' : ''}">${data.rsi !== null && data.rsi !== undefined ? data.rsi.toFixed(1) : '--'}</div>
+                <div style="font-size:11px;color:#8899aa;margin-top:2px;">${data.rsi_signal || ''}</div>
+            </div>
+            <div class="analysis-card">
+                <div class="analysis-card-title">波动率</div>
+                <div class="analysis-card-value">${data.volatility !== null && data.volatility !== undefined ? data.volatility + '%' : '--'}</div>
+            </div>
+            
+            <!-- 支撑阻力 -->
+            <div class="analysis-card full-width">
+                <div class="analysis-card-title">支撑位 / 阻力位</div>
+                <div class="sr-row">${srHtml}</div>
+            </div>
+            
+            <!-- 成交量 -->
+            <div class="analysis-card">
+                <div class="analysis-card-title">成交量</div>
+                <div class="volume-bar">
+                    <span style="font-size:13px;color:#e0e0e0;">${data.volume ? formatQty(data.volume) : '--'}</span>
+                    <div style="flex:1;background:#1a2a3a;border-radius:3px;height:6px;">
+                        <div class="volume-bar-fill" style="width:${volumeBarWidth}%;"></div>
+                    </div>
+                </div>
+                <div style="font-size:11px;color:#8899aa;margin-top:2px;">
+                    均值: ${data.avg_volume ? formatQty(data.avg_volume) : '--'} 
+                    | 量比: ${data.volume_ratio ? data.volume_ratio + 'x' : '--'}
+                </div>
+            </div>
+            <div class="analysis-card">
+                <div class="analysis-card-title">数据点数</div>
+                <div class="analysis-card-value" style="font-size:14px;">${data.data_points || 0}</div>
+            </div>
+            
+            <!-- 资金流量 -->
+            <div class="analysis-card full-width">
+                <div class="analysis-card-title">资金流量估算</div>
+                <div class="flow-row">
+                    <span class="flow-item ${flowClass}">
+                        <span class="flow-label">净流量:</span>
+                        ${mf.net_flow >= 0 ? '+' : ''}${mf.net_flow || 0}
+                    </span>
+                    <span class="flow-item positive">
+                        <span class="flow-label">流入:</span>
+                        ${mf.inflow || 0}
+                    </span>
+                    <span class="flow-item negative">
+                        <span class="flow-label">流出:</span>
+                        ${mf.outflow || 0}
+                    </span>
+                    <span class="flow-item">
+                        <span class="flow-label">流入占比:</span>
+                        ${flowRatio}%
+                    </span>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.getElementById('analysisIntervalContent').innerHTML = html;
+}
+
+
+// ========== 交易建议面板 ==========
+function toggleAdvicePanel() {
+    const panel = document.getElementById('advicePanel');
+    const icon = document.getElementById('adviceToggleIcon');
+    if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+        icon.textContent = '▼';
+        // 只有币种变了才重新加载
+        const symbol = document.getElementById('symbol').value;
+        if (adviceLoadedSymbol !== symbol) {
+            adviceLoadedSymbol = symbol;
+            loadAdvice();
+        }
+    } else {
+        panel.style.display = 'none';
+        icon.textContent = '▶';
+    }
+}
+
+async function loadAdvice() {
+    const exchange = document.getElementById('exchange').value;
+    const symbol = document.getElementById('symbol').value;
+    
+    if (!symbol) {
+        document.getElementById('adviceLoading').style.display = 'block';
+        document.getElementById('adviceLoading').textContent = '请先选择币种';
+        document.getElementById('adviceContent').style.display = 'none';
+        document.getElementById('adviceError').style.display = 'none';
+        return;
+    }
+    
+    document.getElementById('adviceLoading').style.display = 'block';
+    document.getElementById('adviceLoading').textContent = '正在分析市场数据...';
+    document.getElementById('adviceContent').style.display = 'none';
+    document.getElementById('adviceError').style.display = 'none';
+    
+    // 同时加载建议和分析数据
+    const [adviceData, analysisResult] = await Promise.all([
+        apiGet(`/api/advice?exchange=${exchange}&symbol=${symbol}`),
+        apiGet(`/api/analysis?exchange=${exchange}&symbol=${symbol}`)
+    ]);
+    
+    document.getElementById('adviceLoading').style.display = 'none';
+    
+    if (adviceData && adviceData.score !== undefined) {
+        document.getElementById('adviceContent').style.display = 'block';
+        document.getElementById('adviceError').style.display = 'none';
+        
+        // 保存分析数据到全局变量，供 renderAdvice 使用
+        if (analysisResult && analysisResult.intervals) {
+            window.analysisData = analysisResult;
+        }
+        
+        renderAdvice(adviceData);
+    } else if (adviceData && adviceData.error) {
+        document.getElementById('adviceError').style.display = 'block';
+        document.getElementById('adviceError').textContent = `❌ ${adviceData.error}`;
+        document.getElementById('adviceContent').style.display = 'none';
+    } else {
+        document.getElementById('adviceError').style.display = 'block';
+        document.getElementById('adviceError').textContent = '❌ 无法获取交易建议';
+        document.getElementById('adviceContent').style.display = 'none';
+    }
+}
+
+function renderAdvice(data) {
+    // 评分圆圈
+    const score = data.score || 0;
+    const scoreCircle = document.getElementById('adviceScoreCircle');
+    const scoreValue = document.getElementById('adviceScoreValue');
+    scoreValue.textContent = score;
+    
+    // 根据分数设置颜色
+    let scoreColor, scoreBg;
+    if (score >= 70) {
+        scoreColor = '#4caf50';
+        scoreBg = 'rgba(76, 175, 80, 0.15)';
+    } else if (score >= 50) {
+        scoreColor = '#ff9800';
+        scoreBg = 'rgba(255, 152, 0, 0.15)';
+    } else if (score >= 30) {
+        scoreColor = '#ff5722';
+        scoreBg = 'rgba(255, 87, 34, 0.15)';
+    } else {
+        scoreColor = '#f44336';
+        scoreBg = 'rgba(244, 67, 54, 0.15)';
+    }
+    scoreCircle.style.background = `conic-gradient(${scoreColor} ${score * 3.6}deg, ${scoreBg} ${score * 3.6}deg)`;
+    
+    // 总结
+    const summaryEl = document.getElementById('adviceSummary');
+    summaryEl.textContent = data.summary || '--';
+    summaryEl.style.color = scoreColor;
+    
+    // 详情
+    document.getElementById('adviceDetail').textContent = data.detail || '';
+    
+    // 操作建议
+    const suggestionsEl = document.getElementById('adviceSuggestions');
+    if (data.suggestions && data.suggestions.length > 0) {
+        suggestionsEl.innerHTML = data.suggestions.map(s => `<li>${s}</li>`).join('');
+    } else {
+        suggestionsEl.innerHTML = '<li style="color:#8899aa;">暂无建议</li>';
+    }
+    
+    // 风险提示
+    const warningsEl = document.getElementById('adviceWarnings');
+    if (data.risk_warnings && data.risk_warnings.length > 0) {
+        warningsEl.innerHTML = data.risk_warnings.map(w => `<li>${w}</li>`).join('');
+    } else {
+        warningsEl.innerHTML = '<li style="color:#8899aa;">暂无风险提示</li>';
+    }
+    
+    // 分析依据
+    const reasonsEl = document.getElementById('adviceReasons');
+    if (data.reasons && data.reasons.length > 0) {
+        reasonsEl.innerHTML = data.reasons.map(r => `<li>${r}</li>`).join('');
+    } else {
+        reasonsEl.innerHTML = '<li style="color:#8899aa;">暂无分析依据</li>';
+    }
+    
+    // 价格信息
+    document.getElementById('adviceCurrentPrice').textContent = data.current_price ? `$${formatPrice(data.current_price)}` : '--';
+    document.getElementById('adviceRecentLow').textContent = data.recent_low ? `$${formatPrice(data.recent_low)}` : '--';
+    document.getElementById('adviceRecentHigh').textContent = data.recent_high ? `$${formatPrice(data.recent_high)}` : '--';
+    
+    // 关键数据概览 - 从 analysisData 中提取各周期关键指标
+    if (window.analysisData && window.analysisData.intervals) {
+        const intervals = window.analysisData.intervals;
+        const intervalKeys = Object.keys(intervals);
+        
+        // 构建关键数据表格
+        let tableHtml = `<div class="advice-data-table">
+            <table>
+                <thead>
+                    <tr>
+                        <th>周期</th>
+                        <th>趋势</th>
+                        <th>RSI</th>
+                        <th>MA5</th>
+                        <th>MA20</th>
+                        <th>波动率</th>
+                        <th>量比</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+        
+        intervalKeys.forEach(key => {
+            const d = intervals[key];
+            if (!d || d.error) return;
+            
+            const trendIcon = d.trend ? d.trend.charAt(0) : '➡️';
+            const trendClass = trendIcon === '📈' ? 'up' : (trendIcon === '📉' ? 'down' : 'neutral');
+            const rsiClass = d.rsi >= 70 ? 'down' : (d.rsi <= 30 ? 'up' : '');
+            
+            tableHtml += `<tr>
+                <td><strong>${d.label || key}</strong></td>
+                <td class="${trendClass}">${trendIcon}</td>
+                <td class="${rsiClass}">${d.rsi !== null && d.rsi !== undefined ? d.rsi.toFixed(1) : '--'}</td>
+                <td>${d.ma5 ? '$' + formatPrice(d.ma5) : '--'}</td>
+                <td>${d.ma20 ? '$' + formatPrice(d.ma20) : '--'}</td>
+                <td>${d.volatility !== null && d.volatility !== undefined ? d.volatility + '%' : '--'}</td>
+                <td>${d.volume_ratio ? d.volume_ratio + 'x' : '--'}</td>
+            </tr>`;
+        });
+        
+        tableHtml += `</tbody></table></div>`;
+        
+        // 插入到价格信息后面
+        const priceInfo = document.querySelector('.advice-price-info');
+        // 移除旧的表格
+        const oldTable = document.querySelector('.advice-data-table');
+        if (oldTable) oldTable.remove();
+        priceInfo.insertAdjacentHTML('afterend', tableHtml);
     }
 }

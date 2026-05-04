@@ -15,19 +15,19 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  GRID-Pro v1.0${NC}"
 echo -e "${GREEN}========================================${NC}"
 
-# 检查并杀掉旧进程
-OLD_PID=$(pgrep -f "python3 -m src.web_api" 2>/dev/null || true)
-if [ -n "$OLD_PID" ]; then
-    echo -e "${YELLOW}⚠ 检测到旧进程 (PID: $OLD_PID)，正在关闭...${NC}"
-    kill $OLD_PID 2>/dev/null
+# 检查并杀掉旧进程（匹配多种启动方式）
+OLD_PIDS=$(pgrep -f "src.web_api|src/web_api.py" 2>/dev/null || true)
+if [ -n "$OLD_PIDS" ]; then
+    echo -e "${YELLOW}⚠ 检测到旧进程 (PID: $(echo $OLD_PIDS | tr '\n' ' '))，正在关闭...${NC}"
+    echo "$OLD_PIDS" | xargs kill 2>/dev/null
     sleep 2
     # 如果没关掉，强制杀掉
-    if kill -0 $OLD_PID 2>/dev/null; then
-        kill -9 $OLD_PID 2>/dev/null
-        echo -e "${GREEN}✅ 旧进程已强制关闭${NC}"
-    else
-        echo -e "${GREEN}✅ 旧进程已关闭${NC}"
-    fi
+    for pid in $OLD_PIDS; do
+        if kill -0 $pid 2>/dev/null; then
+            kill -9 $pid 2>/dev/null
+            echo -e "${GREEN}✅ 旧进程 $pid 已强制关闭${NC}"
+        fi
+    done
 fi
 
 # 检查虚拟环境是否完整
