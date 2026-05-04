@@ -1,34 +1,26 @@
-# GRID-Pro - 自动网格交易套利程序
+# GRID-Pro - 自动网格交易系统
 
-> 📅 2026-05-04 更新：优化 Web UI 界面，新增顶部信息栏完整数据展示、USDT/币数量互动计算、最小交易金额检查等功能。
+> 📅 2026-05-04 更新：新增 Web 管理界面、用户登录、技术分析、网格持久化（服务重启自动恢复）
 
 支持 Binance 和 Gate.io 等交易所的现货网格策略，在震荡行情中自动低买高卖套利。
 
 ## 功能特点
 
 ### 核心功能
-- **多交易所支持**：支持 Binance、Gate.io 等主流交易所
+- **Web 管理界面**：浏览器操作，无需命令行
+- **多交易所支持**：支持 Binance、Gate.io
 - **现货网格**：在设定的价格区间内自动低买高卖
-- **自动网格调整**：根据实时行情自动移动网格，确保不会无买单或无卖单
-- **智能风控**：资金管理、止损止盈、交易频率控制
+- **自动网格调整**：根据实时行情自动移动网格
+- **智能风控**：资金管理、止损止盈
+- **网格持久化**：服务重启后自动从交易所拉取挂单恢复运行
+- **技术分析**：多周期 K 线分析、RSI、均线、支撑阻力位
+- **交易建议**：综合评分系统，给出操作建议
 
 ### 网格策略
 - 在价格区间内均匀分布网格层级
 - 每个网格层同时挂买单和卖单
 - 成交后自动在相邻网格补单
 - 根据实时行情自动调整网格位置
-
-### 自动调整机制
-- 定期检查当前价格与网格中心的偏离程度
-- 当偏离超过阈值时，整体移动网格范围
-- 取消旧订单并重新计算网格位置
-- 确保始终有合理的买单和卖单在挂单中
-
-### 风险管理
-- 资金余额检查
-- 止损/止盈自动触发
-- 每日交易次数限制
-- 交易频率控制
 
 ## 快速开始
 
@@ -38,125 +30,125 @@
 pip install -r requirements.txt
 ```
 
-### 2. 配置
+### 2. 配置 API Key
 
-编辑 `config/config.json` 文件：
+通过 Web 页面配置（推荐）：
+1. 启动服务后访问 `http://localhost:3000`
+2. 注册账号并登录
+3. 在页面中填写交易所 API Key（Secret 加密存储）
 
-```json
-{
-  "exchanges": [
-    {
-      "name": "binance",
-      "api_key": "YOUR_API_KEY",
-      "api_secret": "YOUR_API_SECRET",
-      "enable": true
-    }
-  ],
-  "grids": [
-    {
-      "symbol": "BTC/USDT",
-      "upper_price": "70000",
-      "lower_price": "50000",
-      "grid_count": 10,
-      "total_investment": "1000",
-      "auto_adjust_enabled": true,
-      "adjust_interval": 300,
-      "price_deviation_threshold": "0.02"
-    }
-  ]
-}
-```
-
-### 3. 运行
+或者编辑 `.env` 文件：
 
 ```bash
-python -m src.grid_bot
+# 从模板创建
+cp .env.example .env
+
+# 编辑 .env 文件填入你的 API Key
+nano .env
 ```
 
-或指定配置文件路径：
+`.env` 文件格式：
+```
+BINANCE_API_KEY=your_binance_api_key
+BINANCE_API_SECRET=your_binance_api_secret
+GATEIO_API_KEY=your_gateio_api_key
+GATEIO_API_SECRET=your_gateio_api_secret
+```
+
+> ⚠️ **安全提示**：API Secret 会加密存储，建议使用仅交易权限的 API Key
+
+### 3. 启动服务
 
 ```bash
-python -m src.grid_bot config/my_config.json
+# 后台启动（推荐）
+./run.sh
+
+# 查看日志
+tail -f logs/server.log
+
+# 停止服务
+./run.sh stop
+
+# 重启服务
+./run.sh restart
 ```
 
-## 配置说明
+启动后访问 **http://localhost:3000** 进入 Web 管理界面。
 
-### 交易所配置
+### 4. 使用 Web 界面
 
-| 参数 | 说明 | 示例 |
-|------|------|------|
-| `name` | 交易所名称 | `binance`, `gateio` |
-| `api_key` | API密钥 | - |
-| `api_secret` | API密钥 | - |
-| `enable` | 是否启用 | `true`/`false` |
-
-### 网格策略配置
-
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `symbol` | 交易对 | `BTC/USDT` |
-| `upper_price` | 网格上限价格 | `70000` |
-| `lower_price` | 网格下限价格 | `50000` |
-| `grid_count` | 网格数量 | `10` |
-| `total_investment` | 总投资额(USDT) | `1000` |
-| `auto_adjust_enabled` | 启用自动调整 | `true` |
-| `adjust_interval` | 调整间隔(秒) | `300` |
-| `price_deviation_threshold` | 价格偏离阈值 | `0.02` (2%) |
-| `max_open_orders` | 最大同时挂单数 | `5` |
-| `stop_loss_pct` | 止损百分比 | `0.05` (5%) |
-| `take_profit_pct` | 止盈百分比 | `0.10` (10%) |
+1. 注册账号并登录
+2. 在左侧面板配置交易所 API Key 并测试连接
+3. 选择币种，系统会自动加载价格和技术分析
+4. 设置网格参数（价格间隔、网格数量、USDT 金额等）
+5. 点击"启动网格"开始自动交易
 
 ## 项目结构
 
 ```
-grid-trading-bot/
+GRID-Pro/
 ├── config/
-│   └── config.json          # 配置文件
+│   └── config.json          # 网格策略配置文件
+├── data/                    # 数据库文件
+├── logs/                    # 日志文件
+│   ├── server.log           # Web 服务日志
+│   └── grid_bot_*.log       # 程序运行日志
 ├── src/
-│   ├── __init__.py
-│   ├── grid_bot.py          # 主程序入口
+│   ├── web_api.py           # Web API 服务（FastAPI）
+│   ├── grid_bot.py          # 命令行主程序
 │   ├── exchanges/
-│   │   ├── __init__.py
 │   │   ├── base.py          # 交易所基类
 │   │   ├── binance.py       # Binance 实现
 │   │   ├── gateio.py        # Gate.io 实现
 │   │   └── factory.py       # 交易所工厂
 │   ├── strategies/
-│   │   ├── __init__.py
 │   │   └── grid_strategy.py # 网格策略核心
+│   ├── analysis/
+│   │   └── market_analyzer.py # 技术分析
 │   ├── models/
-│   │   ├── __init__.py
 │   │   ├── config.py        # 配置模型
 │   │   └── trading.py       # 交易模型
+│   ├── static/              # 前端页面
+│   │   ├── index.html       # 主页面
+│   │   ├── login.html       # 登录页面
+│   │   ├── app.js           # 前端逻辑
+│   │   └── style.css        # 样式
 │   └── utils/
-│       ├── __init__.py
 │       ├── config_loader.py # 配置加载
 │       └── risk_manager.py  # 风险管理
-├── requirements.txt
-└── README.md
+├── .env                     # API Key 配置（加密存储）
+├── run.sh                   # 一键启动/停止脚本
+└── requirements.txt
 ```
 
-## 策略原理
+## 常用命令
 
-### 网格策略
+```bash
+# 启动服务（后台运行）
+./run.sh
 
-1. **网格建立**：在设定的价格区间内，将价格均匀分为 N 个网格
-2. **挂单策略**：在当前价格下方挂买单，上方挂卖单
-3. **成交补单**：买单成交后，在更低价格重新挂买单；卖单成交后，在更高价格重新挂卖单
-4. **套利原理**：每次低买高卖赚取网格差价
+# 查看实时日志
+tail -f logs/server.log
 
-### 自动调整
+# 查看程序运行日志
+tail -f logs/grid_bot_$(date +%Y-%m-%d).log
 
-1. 定期检查当前价格与网格中心的偏离度
-2. 如果价格大幅偏离网格中心，整体移动网格范围
-3. 确保网格始终围绕当前价格，避免只有买单或只有卖单的情况
+# 停止服务
+./run.sh stop
+
+# 重启服务
+./run.sh restart
+
+# 命令行模式（不启动 Web 界面）
+python -m src.grid_bot
+```
 
 ## 安全提示
 
 - **请勿将 API 密钥提交到版本控制系统**
-- 建议使用只读权限或仅交易权限的 API 密钥
+- API Secret 通过 Fernet 加密后存储在 `.env` 文件中
+- 建议使用仅交易权限的 API Key
 - 首次使用建议先用小金额测试
-- 定期检查机器人运行状态
 
 ## 免责声明
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================
-# GRID-Pro - 一键启动脚本
+# GRID-Pro - 一键启动/停止脚本
 # ============================================
 
 set -e
@@ -11,23 +11,66 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+PID_FILE="data/server.pid"
+LOG_FILE="logs/server.log"
+
+# 停止功能
+stop_server() {
+    if [ ! -f "$PID_FILE" ]; then
+        echo -e "${YELLOW}⚠ 服务器未运行 (PID 文件不存在)${NC}"
+        return
+    fi
+    
+    PID=$(cat "$PID_FILE")
+    if kill -0 "$PID" 2>/dev/null; then
+        echo -e "${YELLOW}⏹ 正在停止服务器 (PID: $PID)...${NC}"
+        kill "$PID" 2>/dev/null
+        sleep 2
+        # 如果没关掉，强制杀掉
+        if kill -0 "$PID" 2>/dev/null; then
+            kill -9 "$PID" 2>/dev/null
+            echo -e "${GREEN}✅ 服务器已强制停止${NC}"
+        else
+            echo -e "${GREEN}✅ 服务器已停止${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠ 进程不存在${NC}"
+    fi
+    rm -f "$PID_FILE"
+}
+
+# 如果参数是 stop，执行停止
+if [ "$1" = "stop" ]; then
+    stop_server
+    exit 0
+fi
+
+# 如果参数是 restart，先停止再继续启动
+if [ "$1" = "restart" ]; then
+    stop_server
+    echo ""
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}  重新启动...${NC}"
+    echo -e "${GREEN}========================================${NC}"
+fi
+
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  GRID-Pro v1.0${NC}"
 echo -e "${GREEN}========================================${NC}"
 
-# 检查并杀掉旧进程（匹配多种启动方式）
-OLD_PIDS=$(pgrep -f "src.web_api|src/web_api.py" 2>/dev/null || true)
-if [ -n "$OLD_PIDS" ]; then
-    echo -e "${YELLOW}⚠ 检测到旧进程 (PID: $(echo $OLD_PIDS | tr '\n' ' '))，正在关闭...${NC}"
-    echo "$OLD_PIDS" | xargs kill 2>/dev/null
-    sleep 2
-    # 如果没关掉，强制杀掉
-    for pid in $OLD_PIDS; do
-        if kill -0 $pid 2>/dev/null; then
-            kill -9 $pid 2>/dev/null
-            echo -e "${GREEN}✅ 旧进程 $pid 已强制关闭${NC}"
-        fi
-    done
+# 检查是否已在运行
+if [ -f "$PID_FILE" ]; then
+    PID=$(cat "$PID_FILE")
+    if kill -0 "$PID" 2>/dev/null; then
+        echo -e "${YELLOW}⚠ 服务器已在运行 (PID: $PID)${NC}"
+        echo -e "${GREEN}🌐 访问地址: http://localhost:3000${NC}"
+        echo -e "${GREEN}📝 查看日志: tail -f ${LOG_FILE}${NC}"
+        echo -e "${GREEN}🛑 停止服务: $0 stop${NC}"
+        exit 0
+    else
+        echo -e "${YELLOW}⚠ 检测到残留 PID 文件，正在清理...${NC}"
+        rm -f "$PID_FILE"
+    fi
 fi
 
 # 检查虚拟环境是否完整
@@ -70,8 +113,24 @@ fi
 mkdir -p data logs
 
 echo -e "${GREEN}✅ 环境就绪，正在启动服务器...${NC}"
-echo -e "${GREEN}🌐 访问地址: http://localhost:3000${NC}"
-echo -e "${GREEN}========================================${NC}"
 
-# 启动 Web 服务器
-python3 -m src.web_api
+# 后台启动 Web 服务器
+nohup python3 -m src.web_api > "$LOG_FILE" 2>&1 &
+echo $! > "$PID_FILE"
+
+sleep 2
+
+# 检查是否启动成功
+if kill -0 $(cat "$PID_FILE") 2>/dev/null; then
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}✅ 服务器已后台启动 (PID: $(cat $PID_FILE))${NC}"
+    echo -e "${GREEN}🌐 访问地址: http://localhost:3000${NC}"
+    echo -e "${GREEN}📝 查看日志: tail -f ${LOG_FILE}${NC}"
+    echo -e "${GREEN}🛑 停止服务: $0 stop${NC}"
+    echo -e "${GREEN}🔄 重启服务: $0 restart${NC}"
+    echo -e "${GREEN}========================================${NC}"
+else
+    echo -e "${RED}❌ 启动失败，请查看日志: tail -f ${LOG_FILE}${NC}"
+    rm -f "$PID_FILE"
+    exit 1
+fi

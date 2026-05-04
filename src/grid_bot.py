@@ -109,13 +109,26 @@ class GridTradingBot:
         return True
     
     def _find_exchange_config(self, grid_config: GridConfig) -> Optional[ExchangeConfig]:
-        """查找网格策略对应的交易所配置"""
+        """查找网格策略对应的交易所配置
+        
+        优先从 .env 文件读取 API Key（加密存储），
+        如果 .env 中没有则使用 config.json 中的值。
+        """
         if not self.config:
             return None
         
         # 简单策略：使用第一个启用的交易所
         for exchange_config in self.config.exchanges:
             if exchange_config.enable:
+                # 尝试从 .env 读取 API Key（覆盖 config.json 中的空值）
+                try:
+                    from src.web_api import _get_api_keys
+                    api_key, api_secret = _get_api_keys(exchange_config.name)
+                    if api_key and api_secret:
+                        exchange_config.api_key = api_key
+                        exchange_config.api_secret = api_secret
+                except Exception:
+                    pass  # 如果读取失败，使用 config.json 中的值
                 return exchange_config
         
         return None
