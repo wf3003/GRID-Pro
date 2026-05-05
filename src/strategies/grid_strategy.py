@@ -324,8 +324,8 @@ class GridStrategy:
         """处理订单 - 检查成交并补单
         
         核心逻辑：
-        - 买单成交 → 在成交价上方一个间隔补一个卖单
-        - 卖单成交 → 在成交价下方一个间隔补一个买单
+        - 买单成交 → 在成交价上方一个间隔补一个卖单，记录成交
+        - 卖单成交 → 在成交价下方一个间隔补一个买单，记录成交
         - 每3秒扫描一次，确保网格始终完整
         """
         # 获取当前行情
@@ -352,14 +352,15 @@ class GridStrategy:
             if level.buy_order and level.buy_order.id:
                 if level.buy_order.id not in open_order_ids:
                     # 订单不在挂单列表中，说明已被吃掉或取消
-                    # 尝试查询订单状态，如果查询失败（如 Gate.io 返回 404）也视为已成交
                     is_filled = False
+                    filled_qty = level.buy_order.quantity
                     try:
                         filled_order = await self.exchange.get_order(
                             self.config.symbol, level.buy_order.id
                         )
                         if filled_order and filled_order.status == OrderStatus.FILLED:
                             is_filled = True
+                            filled_qty = filled_order.filled_quantity
                         elif filled_order is None:
                             # Gate.io 查询已成交订单可能返回 None（404），视为已成交
                             is_filled = True
@@ -370,24 +371,48 @@ class GridStrategy:
                         is_filled = True
                     
                     if is_filled:
+                        # 记录成交
+                        filled_price = level.buy_price
+                        filled_amount = filled_price * filled_qty
+                        fee = float(filled_amount * self.config.fee_rate / Decimal("2"))
+                        
+                        # 创建成交订单对象并通知
+                        filled_order_obj = Order(
+                            id=level.buy_order.id,
+                            exchange=self.exchange.name,
+                            symbol=self.config.symbol,
+                            side=OrderSide.BUY,
+                            price=filled_price,
+                            quantity=filled_qty,
+                            filled_quantity=filled_qty,
+                            status=OrderStatus.FILLED,
+                            type=OrderType.LIMIT
+                        )
+                        await self._on_order_filled(filled_order_obj)
+                        
                         level.buy_order = None
                         # 买单成交 → 在成交价上方一个间隔补一个卖单
                         sell_price = level.buy_price + self._grid_spacing
                         level.sell_price = self._round_price(sell_price)
-                        await self._place_sell_order(level)
-                        logger.info(f"买单已处理，补卖单: {level.sell_price} x {level.quantity}")
+                        ok = await self._place_sell_order(level)
+                        if ok:
+                            logger.info(f"买单已成交，补卖单成功: {level.sell_price} x {level.quantity}")
+                        else:
+                            logger.warning(f"买单已成交，但补卖单失败: {level.sell_price} x {level.quantity}")
             
             # 检查卖单是否成交
             if level.sell_order and level.sell_order.id:
                 if level.sell_order.id not in open_order_ids:
                     # 订单不在挂单列表中，说明已被吃掉或取消
                     is_filled = False
+                    filled_qty = level.sell_order.quantity
                     try:
                         filled_order = await self.exchange.get_order(
                             self.config.symbol, level.sell_order.id
                         )
                         if filled_order and filled_order.status == OrderStatus.FILLED:
                             is_filled = True
+                            filled_qty = filled_order.filled_quantity
                         elif filled_order is None:
                             # Gate.io 查询已成交订单可能返回 None（404），视为已成交
                             is_filled = True
@@ -398,12 +423,34 @@ class GridStrategy:
                         is_filled = True
                     
                     if is_filled:
+                        # 记录成交
+                        filled_price = level.sell_price
+                        filled_amount = filled_price * filled_qty
+                        fee = float(filled_amount * self.config.fee_rate / Decimal("2"))
+                        
+                        # 创建成交订单对象并通知
+                        filled_order_obj = Order(
+                            id=level.sell_order.id,
+                            exchange=self.exchange.name,
+                            symbol=self.config.symbol,
+                            side=OrderSide.SELL,
+                            price=filled_price,
+                            quantity=filled_qty,
+                            filled_quantity=filled_qty,
+                            status=OrderStatus.FILLED,
+                            type=OrderType.LIMIT
+                        )
+                        await self._on_order_filled(filled_order_obj)
+                        
                         level.sell_order = None
                         # 卖单成交 → 在成交价下方一个间隔补一个买单
                         buy_price = level.sell_price - self._grid_spacing
                         level.buy_price = self._round_price(buy_price)
-                        await self._place_buy_order(level)
-                        logger.info(f"卖单已处理，补买单: {level.buy_price} x {level.quantity}")
+                        ok = await self._place_buy_order(level)
+                        if ok:
+                            logger.info(f"卖单已成交，补买单成功: {level.buy_price} x {level.quantity}")
+                        else:
+                            logger.warning(f"卖单已成交，但补买单失败: {level.buy_price} x {level.quantity}")
         
         # 检查是否有网格层缺少订单（比如补单失败的情况）
         # 如果某个活跃层既没有买单也没有卖单，尝试重新挂单
@@ -415,13 +462,21 @@ class GridStrategy:
                 if level.buy_price > 0 and level.sell_price > 0:
                     # 两个价格都有，看哪个更接近当前价格
                     if abs(level.buy_price - current_price) < abs(level.sell_price - current_price):
-                        await self._place_buy_order(level)
+                        ok = await self._place_buy_order(level)
+                        if ok:
+                            logger.info(f"补挂买单: {level.buy_price} x {level.quantity}")
                     else:
-                        await self._place_sell_order(level)
+                        ok = await self._place_sell_order(level)
+                        if ok:
+                            logger.info(f"补挂卖单: {level.sell_price} x {level.quantity}")
                 elif level.buy_price > 0:
-                    await self._place_buy_order(level)
+                    ok = await self._place_buy_order(level)
+                    if ok:
+                        logger.info(f"补挂买单: {level.buy_price} x {level.quantity}")
                 elif level.sell_price > 0:
-                    await self._place_sell_order(level)
+                    ok = await self._place_sell_order(level)
+                    if ok:
+                        logger.info(f"补挂卖单: {level.sell_price} x {level.quantity}")
         
         # 更新活跃订单统计
         active_buys = 0
@@ -433,6 +488,45 @@ class GridStrategy:
                 active_sells += 1
         self.status.active_buy_orders = active_buys
         self.status.active_sell_orders = active_sells
+    
+    async def _check_min_order_amount(self, current_price: Decimal) -> Decimal:
+        """检查并返回满足交易所最小订单金额的每格 USDT 金额
+        
+        如果当前计算的每格金额小于交易所最小要求，则自动调整。
+        """
+        try:
+            min_amount = await self.exchange.get_min_order_amount(self.config.symbol)
+        except Exception:
+            min_amount = Decimal("0")
+        
+        if min_amount <= Decimal("0"):
+            return self._per_grid_usdt
+        
+        # 检查每格金额是否满足最小要求
+        if self._per_grid_usdt < min_amount:
+            logger.warning(f"每格金额 {self._per_grid_usdt:.2f} USDT 小于交易所最小要求 {min_amount:.2f} USDT")
+            
+            # 方案1：尝试减少网格数量来增加每格金额
+            total_usdt = self._per_grid_usdt * Decimal(str(self._buy_grids + self._sell_grids))
+            max_grids = int(total_usdt / min_amount)
+            
+            if max_grids >= 2:
+                # 重新计算网格数量
+                new_half = max(1, max_grids // 2)
+                self._buy_grids = max(1, new_half - 1)
+                self._sell_grids = max(1, new_half - 1)
+                total_grids = self._buy_grids + self._sell_grids
+                self._per_grid_usdt = total_usdt / Decimal(str(total_grids))
+                logger.info(f"已自动调整: 网格数={total_grids}, 每格={self._per_grid_usdt:.2f} USDT")
+            else:
+                # 方案2：直接使用最小金额
+                self._per_grid_usdt = min_amount
+                logger.info(f"已自动调整: 每格金额设为最小值 {min_amount:.2f} USDT")
+            
+            # 重新计算每格币数量
+            self._per_grid_qty = self._calculate_per_grid_quantity(current_price)
+        
+        return self._per_grid_usdt
     
     async def _place_initial_orders(self):
         """放置初始网格订单
@@ -449,7 +543,11 @@ class GridStrategy:
             if existing_orders:
                 logger.info(f"检测到 {len(existing_orders)} 个现有挂单，先取消")
                 for order in existing_orders:
-                    await self.exchange.cancel_order(self.config.symbol, order.id)
+                    if order and hasattr(order, 'id') and order.id:
+                        try:
+                            await self.exchange.cancel_order(self.config.symbol, order.id)
+                        except Exception as e:
+                            logger.warning(f"取消订单 {order.id} 失败: {e}")
                 await asyncio.sleep(1)  # 等待取消完成
         except Exception as e:
             logger.warning(f"取消现有挂单时出错: {e}")
@@ -467,6 +565,9 @@ class GridStrategy:
         # 保留 1 格缓冲
         self._buy_grids = max(1, half_grids - 1)
         self._sell_grids = max(1, half_grids - 1)
+        
+        # 检查并调整最小订单金额
+        await self._check_min_order_amount(current_price)
         
         # 检查余额，如果币不够则自动买入
         base_asset = self.config.symbol.split('/')[0]
@@ -492,7 +593,7 @@ class GridStrategy:
                         f"预计花费 ${float(buy_usdt_cost):.2f}")
             
             try:
-                # 用市价单买入
+                # 用限价单买入
                 order = await self.exchange.create_limit_order(
                     symbol=self.config.symbol,
                     side=OrderSide.BUY,
@@ -673,7 +774,11 @@ class GridStrategy:
         try:
             open_orders = await self.exchange.get_open_orders(self.config.symbol)
             for order in open_orders:
-                await self.exchange.cancel_order(self.config.symbol, order.id)
+                if order and hasattr(order, 'id') and order.id:
+                    try:
+                        await self.exchange.cancel_order(self.config.symbol, order.id)
+                    except Exception as e:
+                        logger.warning(f"取消订单 {order.id} 失败: {e}")
             
             # 清除网格层级的订单引用
             for level in self.grid_levels:

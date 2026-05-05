@@ -60,6 +60,13 @@ class ExchangeBase(ABC):
         """获取交易对精度 (价格精度, 数量精度)"""
         pass
     
+    async def get_min_order_amount(self, symbol: str) -> Decimal:
+        """获取最小订单金额（计价货币，如 USDT）
+        
+        默认返回 0，子类可覆盖此方法返回交易所实际的最小金额。
+        """
+        return Decimal("0")
+    
     @abstractmethod
     async def get_trading_pairs(self, quote_asset: str = "USDT") -> List[dict]:
         """获取可交易币种列表

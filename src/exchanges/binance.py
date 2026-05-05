@@ -214,6 +214,20 @@ class BinanceExchange(ExchangeBase):
         
         raise ValueError(f"Symbol {symbol} not found")
     
+    async def get_min_order_amount(self, symbol: str) -> Decimal:
+        """获取最小订单金额（计价货币，如 USDT）"""
+        data = await self._request("GET", "/api/v3/exchangeInfo")
+        
+        for s in data['symbols']:
+            if s['symbol'] == symbol:
+                # Binance 的 minNotional 在 filters[2] 或 filters[3] 中
+                for f in s.get('filters', []):
+                    if f.get('filterType') == 'MIN_NOTIONAL':
+                        return Decimal(str(f.get('minNotional', '0')))
+                return Decimal("0")
+        
+        return Decimal("0")
+    
     async def get_trading_pairs(self, quote_asset: str = "USDT") -> List[dict]:
         """获取可交易币种列表"""
         data = await self._request("GET", "/api/v3/exchangeInfo")

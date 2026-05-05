@@ -101,7 +101,34 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(updateTicker, 10000);
     setInterval(updateBalance, 30000);
     statusTimer = setInterval(updateStatus, 5000);
+    
+    // 页面加载后立即检查状态，避免刷新后按钮状态错误
+    setTimeout(checkInitialStatus, 500);
 });
+
+// ========== 页面初始化状态检查 ==========
+async function checkInitialStatus() {
+    const data = await apiGet('/api/status');
+    if (data) {
+        if (data.is_running) {
+            // 网格正在运行
+            isRunning = true;
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('stopBtn').disabled = false;
+            document.getElementById('runningPanel').style.display = 'block';
+            document.getElementById('botConfigPanel').style.display = 'block';
+            updateUI(data);
+            updateRunningPanel(data);
+            updateBotConfigPanel(data);
+            addLog('🔄 检测到运行中的网格策略');
+        } else if (data.has_active_config) {
+            // 数据库中有运行中的配置但内存中丢失（服务重启），正在尝试恢复
+            addLog('🔄 检测到运行中的网格配置，正在尝试恢复...');
+            // 5秒后再次检查
+            setTimeout(checkInitialStatus, 5000);
+        }
+    }
+}
 
 // ========== WebSocket ==========
 function connectWebSocket() {
@@ -171,6 +198,15 @@ function handleWsMessage(msg) {
             document.getElementById('runningPanel').style.display = 'none';
             document.getElementById('botConfigPanel').style.display = 'none';
             addLog('⏹ 网格策略已停止');
+            break;
+        case 'recovered':
+            isRunning = true;
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('stopBtn').disabled = false;
+            document.getElementById('runningPanel').style.display = 'block';
+            document.getElementById('botConfigPanel').style.display = 'block';
+            addLog(`🔄 已自动恢复网格: ${msg.data.symbol} @ ${msg.data.exchange} (${msg.data.order_count} 个挂单)`);
+            updateStatus();
             break;
     }
 }

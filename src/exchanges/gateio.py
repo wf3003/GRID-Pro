@@ -257,6 +257,17 @@ class GateIOExchange(ExchangeBase):
         
         raise ValueError(f"Symbol {symbol} not found")
     
+    async def get_min_order_amount(self, symbol: str) -> Decimal:
+        """获取最小订单金额（计价货币，如 USDT）"""
+        gate_symbol = symbol.replace("/", "_")
+        data = await self._request("GET", "/api/v4/spot/currency_pairs")
+        
+        for pair in data:
+            if pair['id'] == gate_symbol:
+                return Decimal(str(pair.get('min_quote_amount', '3')))
+        
+        return Decimal("3")  # Gate.io 默认最小 3 USDT
+    
     async def get_trading_pairs(self, quote_asset: str = "USDT") -> List[dict]:
         """获取可交易币种列表（按币种名称排序）"""
         # 用独立 session，避免 session 复用问题

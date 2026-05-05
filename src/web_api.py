@@ -281,8 +281,34 @@ class GridBotAPI:
         @app.get("/api/status")
         async def get_status(username: str = Depends(get_current_user)):
             """获取当前状态"""
+            # 检查是否有运行中的网格配置（即使内存状态丢失）
+            active_config = self.db.get_active_grid_config()
+            
             if not self.strategy or not self._running:
-                return {"is_running": False}
+                # 如果数据库中有运行中的网格但内存中没有，尝试恢复
+                if active_config and not self._running:
+                    # 尝试异步恢复（不阻塞请求）
+                    try:
+                        asyncio.create_task(self._auto_recover_grid())
+                    except Exception:
+                        pass
+                    return {"is_running": False, "has_active_config": True, 
+                            "message": "检测到运行中的网格配置，正在尝试恢复..."}
+                
+                # 即使数据库状态是 stopped，也检查交易所是否有挂单
+                # 获取所有配置（按时间倒序），检查最新的那个
+                all_configs = self.db.get_grid_configs()
+                if all_configs:
+                    latest_config = all_configs[0]
+                    # 尝试从交易所恢复挂单
+                    try:
+                        asyncio.create_task(self._auto_recover_from_exchange_orders(latest_config))
+                    except Exception:
+                        pass
+                    return {"is_running": False, "has_active_config": False, 
+                            "last_config_id": latest_config.get('id')}
+                
+                return {"is_running": False, "has_active_config": False}
             
             stats = self.strategy.get_statistics()
             
@@ -451,6 +477,64 @@ class GridBotAPI:
             except Exception as e:
                 logger.error(f"启动失败: {e}")
                 raise HTTPException(500, f"启动失败: {str(e)}")
+        
+        @app.get("/api/check-min-amount")
+        async def check_min_amount(exchange: str = "gateio", symbol: str = "OPG/USDT", 
+                                   grid_count: int = 26, total_investment: float = 0,
+                                   username: str = Depends(get_current_user)):
+            """检查网格参数是否满足交易所最小订单金额要求"""
+            try:
+                api_key, api_secret = _get_api_keys(exchange)
+                if not api_key or not api_secret:
+                    return {"valid": False, "message": f"请先配置 {exchange} 的 API Key"}
+                
+                exchange_config = ExchangeConfig(
+                    name=exchange,
+                    api_key=api_key,
+                    api_secret=api_secret
+                )
+                ex = ExchangeFactory.create_exchange(exchange_config)
+                
+                # 获取最小订单金额
+                min_amount = await ex.get_min_order_amount(symbol)
+                await ex.close()
+                
+                if min_amount <= 0:
+                    return {"valid": True, "min_amount": 0, "per_grid_amount": 0, 
+                            "message": "无法获取最小订单金额，将使用默认值"}
+                
+                # 计算每格金额
+                half_grids = grid_count // 2
+                buy_grids = max(1, half_grids - 1)
+                sell_grids = max(1, half_grids - 1)
+                total_grids = buy_grids + sell_grids
+                
+                per_grid_amount = total_investment / total_grids if total_investment > 0 else 10
+                
+                if per_grid_amount < min_amount:
+                    # 计算建议的网格数量
+                    max_grids = int(total_investment / min_amount) if total_investment > 0 else 0
+                    suggested_grids = max(2, max_grids * 2) if max_grids >= 2 else grid_count
+                    
+                    return {
+                        "valid": False,
+                        "min_amount": float(min_amount),
+                        "per_grid_amount": round(per_grid_amount, 2),
+                        "message": f"每格金额 {per_grid_amount:.2f} USDT 小于交易所最小要求 {min_amount:.2f} USDT",
+                        "suggestion": f"建议减少网格数量至 {suggested_grids} 格以下，或增加总投资额"
+                    }
+                
+                return {
+                    "valid": True,
+                    "min_amount": float(min_amount),
+                    "per_grid_amount": round(per_grid_amount, 2),
+                    "message": f"每格金额 {per_grid_amount:.2f} USDT 满足最小要求 {min_amount:.2f} USDT"
+                }
+                
+            except Exception as e:
+                logger.error(f"检查最小金额失败: {e}")
+                return {"valid": True, "min_amount": 0, "per_grid_amount": 0, 
+                        "message": f"检查失败: {str(e)}"}
         
         @app.post("/api/stop")
         async def stop_grid(username: str = Depends(get_current_user)):
@@ -852,6 +936,122 @@ class GridBotAPI:
             self.db.update_grid_status(config['id'], "stopped")
             if self.exchange:
                 await self.exchange.close()
+                self.exchange = None
+            self.strategy = None
+            self._running = False
+    
+    async def _auto_recover_from_exchange_orders(self, config: dict):
+        """从交易所挂单恢复网格（即使数据库状态是 stopped）
+        
+        用于重新登录后，检测交易所是否有挂单并自动恢复。
+        """
+        if self._running or self.strategy:
+            return  # 已经在运行
+        
+        if not config or 'id' not in config:
+            logger.warning("配置无效，无法恢复")
+            return
+        
+        exchange_name = config.get('exchange', 'binance')
+        symbol = config.get('symbol', '')
+        
+        if not symbol:
+            logger.warning("配置中没有交易对，无法恢复")
+            return
+        
+        # 获取 API Key
+        api_key, api_secret = _get_api_keys(exchange_name)
+        if not api_key or not api_secret:
+            return
+        
+        try:
+            # 创建交易所实例
+            exchange_config = ExchangeConfig(
+                name=exchange_name,
+                api_key=api_key,
+                api_secret=api_secret
+            )
+            ex = ExchangeFactory.create_exchange(exchange_config)
+            
+            # 从交易所拉取当前挂单
+            open_orders = await ex.get_open_orders(symbol)
+            
+            if not open_orders:
+                await ex.close()
+                return  # 没有挂单，不需要恢复
+            
+            logger.info(f"检测到 {len(open_orders)} 个现有挂单，自动恢复网格: {symbol} @ {exchange_name}")
+            
+            self.exchange = ex
+            
+            # 创建网格配置
+            grid_config = GridConfig(
+                symbol=symbol,
+                grid_count=config.get('grid_count', 26),
+                price_spacing=config.get('price_spacing'),
+                usdt_amount=config.get('total_investment'),
+                coin_amount=config.get('base_quantity'),
+                stop_loss_price=config.get('stop_loss_price'),
+                total_investment=config.get('total_investment'),
+                base_quantity=config.get('base_quantity'),
+                profit_per_trade=config.get('profit_per_trade', 0.01),
+                fee_rate=config.get('fee_rate', 0.002)
+            )
+            
+            # 创建策略
+            self.strategy = GridStrategy(self.exchange, grid_config)
+            self.strategy.db_config_id = config['id']
+            
+            # 设置回调
+            self.strategy.on_order_placed = self._on_order_placed
+            self.strategy.on_order_filled_callback = self._on_order_filled
+            self.strategy.on_grid_adjusted = self._on_grid_adjusted
+            self.strategy.on_status_update = self._on_status_update
+            
+            # 从现有挂单恢复
+            recovered = await self.strategy.recover_from_existing_orders(open_orders)
+            
+            if not recovered:
+                logger.warning("从交易所挂单恢复失败")
+                await ex.close()
+                self.exchange = None
+                self.strategy = None
+                return
+            
+            # 更新数据库状态为 running
+            self.db.update_grid_status(config['id'], "running")
+            
+            # 启动主循环
+            self._running = True
+            self.strategy._running = True
+            self.strategy.status.is_running = True
+            
+            task = asyncio.create_task(self.strategy._main_loop())
+            self.strategy._tasks.append(task)
+            
+            adjust_task = asyncio.create_task(self.strategy._auto_adjust_loop())
+            self.strategy._tasks.append(adjust_task)
+            
+            logger.info(f"✅ 从交易所挂单自动恢复网格: {symbol} @ {exchange_name} "
+                        f"({len(open_orders)} 个挂单)")
+            
+            # 通知前端
+            await self._broadcast({
+                "type": "recovered",
+                "data": {
+                    "symbol": symbol,
+                    "exchange": exchange_name,
+                    "order_count": len(open_orders)
+                }
+            })
+            
+        except Exception as e:
+            logger.error(f"从交易所挂单恢复失败: {e}")
+            if self.exchange:
+                try:
+                    await self.exchange.close()
+                except Exception:
+                    pass
                 self.exchange = None
             self.strategy = None
             self._running = False
